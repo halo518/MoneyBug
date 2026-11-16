@@ -1,4 +1,8 @@
 HELP.md
+
+### Secrets (application-secret.sample.yml 만 커밋) ###
+application-secret.yml
+**/application-secret.yml
 .gradle
 build/
 !gradle/wrapper/gradle-wrapper.jar

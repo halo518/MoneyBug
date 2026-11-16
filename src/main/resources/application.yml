@@ -1,0 +1,65 @@
+spring:
+  application:
+    name: MoneyBug
+
+  # 민감한 값(DB 접속 정보, JWT 시크릿, 카카오 키)은 application-secret.yml 에서 읽어온다.
+  # application-secret.yml 은 .gitignore 대상이므로, 처음 받았다면
+  # application-secret.sample.yml 을 복사해서 application-secret.yml 을 만들고 실제 값을 채울 것.
+  profiles:
+    include: secret
+
+  # ==========================================
+  # MySQL DB (url / username / password 는 application-secret.yml)
+  # ==========================================
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # ==========================================
+  # JPA (Hibernate)
+  # ==========================================
+  jpa:
+    hibernate:
+      # update: Entity 클래스 기준으로 DB 테이블을 자동 생성/수정한다.
+      ddl-auto: update
+    # 실행되는 SQL 을 콘솔에 보기 좋게 출력한다.
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+logging:
+  level:
+    # JPA 쿼리 파라미터(?)에 들어가는 실제 값을 콘솔에 출력한다.
+    org.hibernate.orm.jdbc.bind: TRACE
+
+# ==========================================
+# Kakao (rest-api-key / client-secret 는 application-secret.yml)
+# ==========================================
+kakao:
+  redirect-uri: ${KAKAO_REDIRECT_URI:http://localhost:8080/api/auth/kakao/callback}
+  # 선택: 설정하면 다른 카카오 앱에서 발급된 모바일 토큰을 거부한다.
+  app-id: ${KAKAO_APP_ID:}
+
+# ==========================================
+# JWT (secret 은 application-secret.yml)
+# ==========================================
+jwt:
+  access-ttl-seconds: 1800
+  refresh-ttl-seconds: 1209600
+
+# ==========================================
+# Dev login bypass (LOCAL ONLY)
+# true 이면 카카오 토큰 "test_token" 이 카카오 인증 없이 테스트 사용자로 로그인된다.
+# 로컬 개발 편의를 위해 기본값은 켜짐(true). 운영 환경에서는 반드시 DEV_LOGIN_ENABLED=false 로 끌 것.
+# ==========================================
+auth:
+  dev-login:
+    enabled: ${DEV_LOGIN_ENABLED:true}
+
+# ==========================================
+# Swagger (springdoc)
+# 우리 DTO 는 StoreDto.Request / ContractDto.Request 처럼 중첩 클래스 이름이 같아서, 기본 설정이면 스키마 이름이
+# 모두 "Request" 로 합쳐져 서로 덮어쓴다(매장 생성에 계약서 필드가 보이던 원인). 전체 클래스 이름으로 구분한다.
+# ==========================================
+springdoc:
+  use-fqn: true
