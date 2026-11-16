@@ -9,6 +9,10 @@ build/
 !**/src/main/**/build/
 !**/src/test/**/build/
 
+### Gradle ###
+gradle-app.setting
+.gradletasknamecache
+
 ### STS ###
 .apt_generated
 .classpath
