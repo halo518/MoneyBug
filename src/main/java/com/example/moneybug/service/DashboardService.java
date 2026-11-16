@@ -17,7 +17,6 @@ import com.example.moneybug.repository.ContractRepository;
 import com.example.moneybug.repository.NotificationRepository;
 import com.example.moneybug.repository.ScheduleRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
-import com.example.moneybug.repository.SubstituteApplicantRepository;
 import com.example.moneybug.repository.SubstituteRequestRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -45,12 +44,12 @@ public class DashboardService {
     private final ScheduleRepository scheduleRepository;
     private final AttendanceRepository attendanceRepository;
     private final SubstituteRequestRepository substituteRequestRepository;
-    private final SubstituteApplicantRepository substituteApplicantRepository;
     private final StoreWorkerRepository storeWorkerRepository;
     private final ContractRepository contractRepository;
     private final NotificationRepository notificationRepository;
     private final StoreAccess access;
     private final StaffAssembler staffAssembler;
+    private final SubstituteAssembler substituteAssembler;
 
     public DashboardDto.Response dashboard(Integer userId, Integer storeId, LocalDate date) {
         Store store = access.requireOwner(userId, storeId);
@@ -74,8 +73,7 @@ public class DashboardService {
         List<SubstituteRequestDto.Response> pendingSubs = substituteRequestRepository
                 .findByStoreAndStatusIn(storeId, List.of(SubstituteRequest.Status.OPEN,
                         SubstituteRequest.Status.ACCEPTED)).stream()
-                .map(r -> SubstituteRequestDto.Response.from(r, substituteApplicantRepository
-                        .findByRequestId(r.getId()).stream().map(ap -> ap.getApplicant().getId()).toList()))
+                .map(substituteAssembler::toDto)
                 .toList();
 
         int pendingJoin = (int) storeWorkerRepository.countByStoreIdAndStatus(storeId, StoreWorker.Status.PENDING);

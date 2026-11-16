@@ -18,7 +18,15 @@ import java.time.LocalDate;
 public class Schedule {
 
     // [추가] 설계서 ShiftKind. 연차는 유급, 휴무는 무급
-    public enum Kind { WORK, LEAVE, OFF }
+    public enum Kind {
+        WORK, LEAVE, OFF;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Kind fromJson(String v) { return EnumJson.parse(Kind.class, v); }
+    }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

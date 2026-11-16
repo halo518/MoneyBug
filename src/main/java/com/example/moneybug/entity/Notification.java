@@ -19,7 +19,15 @@ import java.time.LocalDateTime;
 public class Notification {
 
     // sub=근무/대타, notice=공지, cert=보건증, pay=근태/급여, join=가입, contract=계약서
-    public enum Type { SUB, NOTICE, CERT, PAY, JOIN, CONTRACT }
+    public enum Type {
+        SUB, NOTICE, CERT, PAY, JOIN, CONTRACT;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Type fromJson(String v) { return EnumJson.parse(Type.class, v); }
+    }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

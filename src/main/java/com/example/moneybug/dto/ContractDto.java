@@ -1,5 +1,7 @@
 package com.example.moneybug.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import com.example.moneybug.entity.Contract;
 import com.example.moneybug.entity.StoreWorker;
 import jakarta.validation.constraints.AssertTrue;
@@ -25,9 +27,11 @@ public class ContractDto {
     public static class Request {
         // [변경] mappingId 제거: 경로의 {staffId} 로 결정한다.
         @NotNull
+        @JsonProperty("start")
         private LocalDate startDate;
 
         @NotNull
+        @JsonProperty("end")
         private LocalDate endDate;
 
         @NotNull
@@ -85,7 +89,10 @@ public class ContractDto {
     public static class Response {
         private Integer id;
         private Integer mappingId;
+        // JSON 이름은 FE models.dart Contract 와 같게
+        @JsonProperty("start")
         private LocalDate startDate;
+        @JsonProperty("end")
         private LocalDate endDate;
         private Integer wage;
         private Integer weeklyHours;

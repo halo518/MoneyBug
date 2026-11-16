@@ -13,6 +13,7 @@ import lombok.Setter;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.function.Function;
 
 public class SubstituteRequestDto {
 
@@ -38,43 +39,47 @@ public class SubstituteRequestDto {
         }
     }
 
+    /**
+     * FE models.dart SubstituteRequest 와 같은 모양. FE 는 requesterId·acceptedId·applicantIds 를
+     * 그 매장의 직원(StoreWorker) id 로 쓴다. 엔티티는 User 를 들고 있으므로 조립할 때 변환한다
+     * ({@link com.example.moneybug.service.SubstituteAssembler}).
+     */
     @Getter
     @Builder
     @NoArgsConstructor
     @AllArgsConstructor
     public static class Response {
         private Integer id;
-        private Integer scheduleId;
+        private Integer storeId;
+        private Integer shiftId;
         private Integer requesterId;
-        /** 대타 후보(acceptedId) */
-        private Integer takerId;
+        /** 대타 후보(수락한 직원) */
+        private Integer acceptedId;
         private String reason;
         private SubstituteRequest.Status status;
         private boolean notifyPeers;
         private LocalDateTime createdAt;
         private LocalDateTime notifiedAt;
-        /** 수락한 직원들. 지원자 조인 테이블은 서비스에서 채운다. */
+        /** 수락한 직원들 */
         private List<Integer> applicantIds;
         /** computed: open | accepted */
         private boolean pending;
 
-        public static Response from(SubstituteRequest request) {
-            return from(request, List.of());
-        }
-
-        public static Response from(SubstituteRequest request, List<Integer> applicantIds) {
+        /** staffIdOf: 이 매장에서 그 User 의 직원 id (없으면 null). */
+        public static Response from(SubstituteRequest r, List<User> applicants, Function<User, Integer> staffIdOf) {
             return Response.builder()
-                    .id(request.getId())
-                    .scheduleId(request.getSchedule().getId())
-                    .requesterId(request.getRequester().getId())
-                    .takerId(request.getTaker() == null ? null : request.getTaker().getId())
-                    .reason(request.getReason())
-                    .status(request.getStatus())
-                    .notifyPeers(request.isNotifyPeers())
-                    .createdAt(request.getCreatedAt())
-                    .notifiedAt(request.getNotifiedAt())
-                    .applicantIds(applicantIds)
-                    .pending(request.isPending())
+                    .id(r.getId())
+                    .storeId(r.getSchedule().getStoreWorker().getStore().getId())
+                    .shiftId(r.getSchedule().getId())
+                    .requesterId(staffIdOf.apply(r.getRequester()))
+                    .acceptedId(r.getTaker() == null ? null : staffIdOf.apply(r.getTaker()))
+                    .reason(r.getReason())
+                    .status(r.getStatus())
+                    .notifyPeers(r.isNotifyPeers())
+                    .createdAt(r.getCreatedAt())
+                    .notifiedAt(r.getNotifiedAt() != null ? r.getNotifiedAt() : r.getCreatedAt())
+                    .applicantIds(applicants.stream().map(staffIdOf).toList())
+                    .pending(r.isPending())
                     .build();
         }
     }

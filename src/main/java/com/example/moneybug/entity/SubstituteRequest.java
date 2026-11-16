@@ -18,7 +18,15 @@ public class SubstituteRequest {
     // [변경] 설계서 SubStatus 에 맞춤: open / accepted / approved / rejected / cancelled
     //   OPEN, ACCEPTED(동료 수락, 사장님 승인 대기) 가 '진행 중'.
     //   기존 PENDING -> OPEN, CANCELED -> CANCELLED (schema.sql 마이그레이션 참고)
-    public enum Status { OPEN, ACCEPTED, APPROVED, REJECTED, CANCELLED }
+    public enum Status {
+        OPEN, ACCEPTED, APPROVED, REJECTED, CANCELLED;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Status fromJson(String v) { return EnumJson.parse(Status.class, v); }
+    }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -38,6 +38,7 @@ public class SubstituteService {
     private final StoreAccess access;
     private final NotificationPublisher notifier;
     private final OverlapChecker overlapChecker;
+    private final SubstituteAssembler substituteAssembler;
 
     /**
      * POST .../shifts/{shiftId}/substitute-requests — 근무 당사자만, isWork 근무만, 사유 필수.
@@ -270,7 +271,6 @@ public class SubstituteService {
     }
 
     private SubstituteRequestDto.Response dto(SubstituteRequest r) {
-        return SubstituteRequestDto.Response.from(r, substituteApplicantRepository.findByRequestId(r.getId()).stream()
-                .map(a -> a.getApplicant().getId()).toList());
+        return substituteAssembler.toDto(r);
     }
 }

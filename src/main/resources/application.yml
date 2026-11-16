@@ -40,6 +40,16 @@ kakao:
   # 선택: 설정하면 다른 카카오 앱에서 발급된 모바일 토큰을 거부한다.
   app-id: ${KAKAO_APP_ID:}
 
+# 웹 카카오 로그인 후 브라우저를 돌려보낼 Flutter 웹앱 주소 (끝의 / 는 제거됨)
+app:
+  frontend-url: ${FRONTEND_URL:http://localhost:3004}
+
+# ==========================================
+# CORS: Flutter 웹 origin (쉼표로 여러 개, 패턴 허용). 운영에서는 실제 웹 주소로 바꿀 것.
+# ==========================================
+cors:
+  allowed-origins: ${FRONTEND_ORIGIN:http://localhost:*,http://127.0.0.1:*}
+
 # ==========================================
 # JWT (secret 은 application-secret.yml)
 # ==========================================

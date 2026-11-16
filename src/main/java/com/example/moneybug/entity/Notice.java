@@ -16,7 +16,23 @@ import java.time.LocalDateTime;
 public class Notice {
 
     // [추가] 설계서 §10-10: 한글 상수(일반/중요/노무)를 enum 코드값으로 정리. 표시 문구는 클라이언트.
-    public enum Category { GENERAL, IMPORTANT, LABOR }
+    public enum Category {
+        GENERAL("일반"), IMPORTANT("중요"), LABOR("노무");
+
+        private final String label;
+
+        Category(String label) { this.label = label; }
+
+        // FE 계약: JSON 값은 화면 문구 그대로 ('일반'/'중요'/'노무'). 코드값(GENERAL 등)도 받는다.
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return label; }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Category fromJson(String v) {
+            for (Category c : values()) if (c.label.equals(v == null ? null : v.trim())) return c;
+            return EnumJson.parse(Category.class, v);
+        }
+    }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
