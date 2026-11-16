@@ -4,7 +4,11 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import com.example.moneybug.dto.AppStateDto;
 import com.example.moneybug.dto.MeDto;
+import com.example.moneybug.entity.StoreWorker;
+import com.example.moneybug.repository.StoreRepository;
+import com.example.moneybug.repository.StoreWorkerRepository;
 import com.example.moneybug.service.MeService;
+import com.example.moneybug.service.StoreChangeHub;
 import com.example.moneybug.service.StateService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -12,6 +16,12 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.async.DeferredResult;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * 내 정보 (설계서 §4.1).
@@ -25,6 +35,23 @@ public class MeController {
 
     private final MeService meService;
     private final StateService stateService;
+    private final StoreChangeHub changeHub;
+    private final StoreRepository storeRepository;
+    private final StoreWorkerRepository storeWorkerRepository;
+
+    @Operation(summary = "변경 신호 기다리기 (롱 폴링)", description = "내 매장(소유·재직·가입 대기) 데이터가 since 이후 바뀌면 바로, "
+            + "아니면 최대 25초 뒤 응답해요. {seq, changed}. changed 면 /me/state 를 다시 읽으세요. since 를 빼면 기준 seq 만 줘요.")
+    @GetMapping("/changes")
+    public DeferredResult<Map<String, Object>> changes(@AuthenticationPrincipal Long userId,
+                                                       @RequestParam(defaultValue = "-1") long since) {
+        Integer uid = userId.intValue();
+        Set<Integer> storeIds = new HashSet<>();
+        storeRepository.findByEmployerId(uid).forEach(s -> storeIds.add(s.getId()));
+        storeWorkerRepository.findByWorkerIdAndStatusIn(uid,
+                        List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.PENDING))
+                .forEach(m -> storeIds.add(m.getStore().getId()));
+        return changeHub.await(storeIds, since);
+    }
 
     @Operation(summary = "내 정보 조회", description = "person + 소유 매장(ownedStoreIds) + 소속 매장(memberships, ACTIVE/PENDING). 가입 승인 대기 화면은 이 응답의 status 를 폴링해요.")
     @GetMapping
