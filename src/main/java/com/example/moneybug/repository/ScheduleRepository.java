@@ -32,6 +32,11 @@ public interface ScheduleRepository extends JpaRepository<Schedule, Integer> {
     List<Schedule> findByWorkerBetween(@Param("mappingId") Integer mappingId,
                                        @Param("from") LocalDate from, @Param("to") LocalDate to);
 
+    /** 파트 이름 변경 전파용: 매장의 해당 파트 근무 전부. */
+    @Query("select s from Schedule s where s.storeWorker.store.id = :storeId and s.part in :names")
+    List<Schedule> findByStoreAndPartIn(@Param("storeId") Integer storeId,
+                                        @Param("names") java.util.Collection<String> names);
+
     /** 오늘 이후 근무 (직원 내보내기 시 정리 대상). */
     @Query("select s from Schedule s where s.storeWorker.id = :mappingId and s.workDate >= :from")
     List<Schedule> findFromDateByWorker(@Param("mappingId") Integer mappingId, @Param("from") LocalDate from);

@@ -162,6 +162,14 @@ public class StoreWorker {
     @Column(length = 20)
     private Tone tone = Tone.PRIMARY;
 
+    // 알바생 고정 근무: JSON [[파트이름...] x7] (월~일). StaffPrefs 로 읽고 쓴다.
+    @Column(name = "fixed_parts", columnDefinition = "TEXT")
+    private String fixedParts;
+
+    // 직원 요일별 출퇴근: JSON [{startMin,endMin}|null x7] 또는 null.
+    @Column(name = "work_hours", columnDefinition = "TEXT")
+    private String workHours;
+
     // [추가] 입사일(승인일)
     @Column(name = "joined_at")
     private LocalDate joinedAt;

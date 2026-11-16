@@ -21,6 +21,11 @@ public class StoreDetailDto {
             String address,
             String code,
             @JsonProperty("isSmall") boolean underFive,
+            int openMin,
+            int closeMin,
+            int weekendOpenMin,
+            int weekendCloseMin,
+            Store.SizeMode sizeMode,
             boolean noticeRequiredDefault,
             boolean substitutePush,
             StoreWorker.TaxType defaultDeduction,
@@ -30,13 +35,24 @@ public class StoreDetailDto {
             Map<String, Integer> monthlyTotals) {
 
         public static Response from(Store s, List<StorePart> parts, Map<String, Integer> monthlyTotals) {
+            return from(s, parts, monthlyTotals, s.isUnderFive());
+        }
+
+        /** underFive: 실제 적용값(AUTO 면 재직 인원으로 계산한 값). */
+        public static Response from(Store s, List<StorePart> parts, Map<String, Integer> monthlyTotals,
+                                    boolean underFive) {
             return new Response(
                     s.getId(),
                     s.getEmployer().getId(),
                     s.getStoreName(),
                     s.getAddress(),
                     s.getCode(),
-                    s.isUnderFive(),
+                    underFive,
+                    s.getOpenMin(),
+                    s.getCloseMin(),
+                    s.getWeekendOpenMin(),
+                    s.getWeekendCloseMin(),
+                    s.getSizeMode(),
                     s.isNoticeRequiredDefault(),
                     s.isSubstitutePush(),
                     s.getDefaultDeduction(),

@@ -14,7 +14,11 @@ import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.entity.User;
 import com.example.moneybug.repository.AttendanceRepository;
+import com.example.moneybug.repository.MonthScheduleRepository;
 import com.example.moneybug.repository.NotificationRepository;
+import com.example.moneybug.repository.ScheduleTemplateRepository;
+import com.example.moneybug.dto.MonthScheduleDto;
+import com.example.moneybug.dto.ScheduleTemplateDto;
 import com.example.moneybug.repository.ScheduleRepository;
 import com.example.moneybug.repository.StoreRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
@@ -51,6 +55,8 @@ public class StateService {
     private final AttendanceRepository attendanceRepository;
     private final SubstituteRequestRepository substituteRequestRepository;
     private final NotificationRepository notificationRepository;
+    private final MonthScheduleRepository monthScheduleRepository;
+    private final ScheduleTemplateRepository scheduleTemplateRepository;
     private final StoreService storeService;
     private final NoticeService noticeService;
     private final StaffAssembler staffAssembler;
@@ -98,6 +104,8 @@ public class StateService {
         List<AttendanceViewDto.View> attendance = new ArrayList<>();
         List<SubstituteRequestDto.Response> subs = new ArrayList<>();
         List<NoticeViewDto.View> notices = new ArrayList<>();
+        List<MonthScheduleDto.Response> schedules = new ArrayList<>();
+        List<ScheduleTemplateDto.Response> templates = new ArrayList<>();
         Map<Integer, AppStateDto.Person> persons = new LinkedHashMap<>();
         persons.put(me.getId(), AppStateDto.Person.from(me));
 
@@ -138,6 +146,10 @@ public class StateService {
                     .filter(r -> shiftIds.contains(r.getSchedule().getId()))
                     .forEach(r -> subs.add(substituteAssembler.toDto(r)));
             notices.addAll(noticeService.list(userId, store.getId()).items());
+            monthScheduleRepository.findByStoreIdOrderByMonthAsc(store.getId())
+                    .forEach(m -> schedules.add(MonthScheduleDto.Response.from(m)));
+            scheduleTemplateRepository.findByStoreIdOrderByIdAsc(store.getId())
+                    .forEach(t -> templates.add(ScheduleTemplateDto.Response.from(t)));
         }
 
         // 가입 대기 매장: 매장 정보와 내 직원 행만
@@ -159,6 +171,6 @@ public class StateService {
                 ownerStoreId == null ? "" : String.valueOf(ownerStoreId));
 
         return new AppStateDto.Response(AppStateDto.FE_STATE_VERSION, 1, session,
-                new ArrayList<>(persons.values()), stores, staff, shifts, attendance, subs, notices, notifications);
+                new ArrayList<>(persons.values()), stores, staff, shifts, attendance, subs, notices, notifications, schedules, templates);
     }
 }

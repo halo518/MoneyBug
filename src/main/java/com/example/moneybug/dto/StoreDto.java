@@ -43,10 +43,19 @@ public class StoreDto {
     @Setter
     @NoArgsConstructor
     public static class SettingsRequest {
+        @Size(max = 100)
+        @JsonProperty("name")
+        private String storeName;
+        private Integer openMin;
+        private Integer closeMin;
+        private Integer weekendOpenMin;
+        private Integer weekendCloseMin;
+        private Store.SizeMode sizeMode;
         @JsonProperty("isSmall")
         private Boolean underFive;
         private Boolean noticeRequiredDefault;
         private Boolean substitutePush;
+        private StoreWorker.TaxType defaultDeduction;
     }
 
     @Getter
@@ -64,12 +73,22 @@ public class StoreDto {
         @JsonProperty("isSmall")
         private boolean underFive;
         private boolean noticeRequiredDefault;
+        private int openMin;
+        private int closeMin;
+        private int weekendOpenMin;
+        private int weekendCloseMin;
+        private Store.SizeMode sizeMode;
         private boolean substitutePush;
         private StoreWorker.TaxType defaultDeduction;
         private LocalDateTime scheduleConfirmedAt;
 
         public static Response from(Store store) {
             return Response.builder()
+                    .openMin(store.getOpenMin())
+                    .closeMin(store.getCloseMin())
+                    .weekendOpenMin(store.getWeekendOpenMin())
+                    .weekendCloseMin(store.getWeekendCloseMin())
+                    .sizeMode(store.getSizeMode())
                     .id(store.getId())
                     .employerId(store.getEmployer().getId())
                     .storeName(store.getStoreName())

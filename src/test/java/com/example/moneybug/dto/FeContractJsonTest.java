@@ -3,15 +3,18 @@ package com.example.moneybug.dto;
 import com.example.moneybug.config.FeIdJsonModule;
 import com.example.moneybug.entity.Attendance;
 import com.example.moneybug.entity.Contract;
+import com.example.moneybug.entity.MonthSchedule;
 import com.example.moneybug.entity.Notice;
 import com.example.moneybug.entity.Notification;
 import com.example.moneybug.entity.Schedule;
+import com.example.moneybug.entity.ScheduleTemplate;
 import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StorePart;
 import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.entity.SubstituteRequest;
 import com.example.moneybug.entity.User;
 import com.example.moneybug.service.AttendanceCalc;
+import com.example.moneybug.service.StaffPrefs;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -39,9 +42,10 @@ class FeContractJsonTest {
     private static final Map<String, Set<String>> FE_KEYS = Map.of(
             "persons", Set.of("id", "name", "fullName", "certExpiry", "certAlertDays", "certHasPhoto"),
             "stores", Set.of("id", "name", "address", "code", "ownerPersonId", "isSmall", "noticeRequiredDefault",
-                    "substitutePush", "defaultDeduction", "parts", "monthlyTotals", "scheduleConfirmedAt"),
+                    "substitutePush", "defaultDeduction", "parts", "monthlyTotals", "scheduleConfirmedAt",
+                    "openMin", "closeMin", "weekendOpenMin", "weekendCloseMin", "sizeMode"),
             "staff", Set.of("id", "storeId", "personId", "part", "wage", "deduction", "weeklyHolidayAuto", "premium",
-                    "tone", "kind", "joinedAt", "status", "requestedAt", "contract"),
+                    "tone", "kind", "joinedAt", "status", "requestedAt", "contract", "fixedParts", "workHours"),
             "shifts", Set.of("id", "storeId", "staffId", "date", "startMin", "endMin", "part", "breakMin",
                     "isSubstitute", "originalStaffId", "kind", "timeTbd"),
             "attendance", Set.of("id", "storeId", "shiftId", "staffId", "clockIn", "clockOut", "editReason"),
@@ -50,7 +54,10 @@ class FeContractJsonTest {
             "notices", Set.of("id", "storeId", "title", "body", "category", "required", "pinned", "createdAt",
                     "readBy", "remindedAt"),
             "notifications", Set.of("id", "storeId", "toPersonId", "type", "title", "body", "createdAt", "read",
-                    "refId"));
+                    "refId"),
+            "schedules", Set.of("id", "storeId", "month", "status", "source", "aiComment", "weeklyHolidayPay",
+                    "priority", "updatedAt"),
+            "templates", Set.of("id", "storeId", "name", "createdAt", "shifts"));
 
     @Test
     void appStateMatchesFeModels() throws Exception {
@@ -59,7 +66,7 @@ class FeContractJsonTest {
         Files.createDirectories(out.getParent());
         Files.writeString(out, json.toString());
 
-        assertEquals(3, json.get("v").asInt());
+        assertEquals(4, json.get("v").asInt());
         assertTrue(json.get("nextId").isInt(), "nextId 는 숫자여야 함");
         for (var e : FE_KEYS.entrySet()) {
             JsonNode item = json.get(e.getKey()).get(0);
@@ -77,6 +84,29 @@ class FeContractJsonTest {
         assertTrue(json.get("staff").get(0).get("contract").has("start"));
         assertTrue(json.get("subs").get(0).get("applicantIds").get(0).isString());
         assertTrue(json.get("session").get("ownerStoreId").isString());
+
+        JsonNode store = json.get("stores").get(0);
+        assertEquals(480, store.get("openMin").asInt());
+        assertEquals(1320, store.get("closeMin").asInt());
+        assertEquals("auto", store.get("sizeMode").asString());
+        JsonNode part = store.get("parts").get(0);
+        assertTrue(part.get("id").isString());
+        assertEquals("open", part.get("tone").asString());
+        assertEquals(30, part.get("breakMin").asInt());
+        JsonNode staff = json.get("staff").get(0);
+        assertEquals(7, staff.get("fixedParts").size());
+        assertEquals("오픈", staff.get("fixedParts").get(0).get(0).asString());
+        assertEquals(600, staff.get("workHours").get(1).get("startMin").asInt());
+        assertTrue(staff.get("workHours").get(2).isNull());
+        JsonNode ms = json.get("schedules").get(0);
+        assertEquals("draft", ms.get("status").asString());
+        assertEquals("ai", ms.get("source").asString());
+        assertEquals("allow", ms.get("weeklyHolidayPay").asString());
+        assertEquals("cost", ms.get("priority").asString());
+        JsonNode shift = json.get("templates").get(0).get("shifts").get(0);
+        assertEquals("20", shift.get("staffId").asString());
+        assertEquals(0, shift.get("dayIndex").asInt());
+        assertEquals("work", shift.get("kind").asString());
     }
 
     @Test
@@ -86,6 +116,12 @@ class FeContractJsonTest {
         assertEquals("\"primary\"", mapper.writeValueAsString(StoreWorker.Tone.PRIMARY));
         assertEquals("\"biz33\"", mapper.writeValueAsString(StoreWorker.TaxType.BUSINESS_TAX));
         assertEquals("\"leave\"", mapper.writeValueAsString(Schedule.Kind.LEAVE));
+        assertEquals("\"under5\"", mapper.writeValueAsString(Store.SizeMode.UNDER5));
+        assertEquals("\"middle\"", mapper.writeValueAsString(StorePart.Tone.MIDDLE));
+        assertEquals("\"confirmed\"", mapper.writeValueAsString(MonthSchedule.Status.CONFIRMED));
+        assertEquals("\"template\"", mapper.writeValueAsString(MonthSchedule.Source.TEMPLATE));
+        assertEquals("\"minimize\"", mapper.writeValueAsString(MonthSchedule.HolidayPolicy.MINIMIZE));
+        assertEquals("\"fairness\"", mapper.writeValueAsString(MonthSchedule.Priority.FAIRNESS));
         assertEquals("\"cancelled\"", mapper.writeValueAsString(SubstituteRequest.Status.CANCELLED));
         assertEquals("\"sub\"", mapper.writeValueAsString(Notification.Type.SUB));
         assertEquals("\"중요\"", mapper.writeValueAsString(Notice.Category.IMPORTANT));
@@ -135,6 +171,8 @@ class FeContractJsonTest {
         part.setStartMin(600);
         part.setEndMin(960);
         part.setNeed(1);
+        part.setTone(StorePart.Tone.OPEN);
+        part.setBreakMin(30);
 
         StoreWorker sw = new StoreWorker();
         sw.setId(20);
@@ -143,6 +181,10 @@ class FeContractJsonTest {
         sw.setHourlyWage(10320);
         sw.setPart("오픈");
         sw.setJoinedAt(LocalDate.of(2026, 3, 1));
+        StaffPrefs.setFixedParts(sw, List.of(List.of("오픈"), List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of()));
+        StaffPrefs.setWorkHours(sw, java.util.Arrays.asList(null, new StaffPrefs.WorkHours(600, 960), null, null,
+                null, null, null));
         Contract c = new Contract();
         c.setId(1);
         c.setStoreWorker(sw);
@@ -188,6 +230,22 @@ class FeContractJsonTest {
         noti.setCreatedAt(LocalDateTime.of(2026, 5, 13, 12, 0));
         noti.setRefId(50);
 
+        MonthSchedule ms = new MonthSchedule();
+        ms.setId(80);
+        ms.setStore(store);
+        ms.setMonth("2026-06");
+        ms.setSource(MonthSchedule.Source.AI);
+        ms.setAiComment("코멘트");
+        ms.setWeeklyHolidayPay(MonthSchedule.HolidayPolicy.ALLOW);
+        ms.setPriority(MonthSchedule.Priority.COST);
+
+        ScheduleTemplate tpl = new ScheduleTemplate();
+        tpl.setId(90);
+        tpl.setStore(store);
+        tpl.setName("기본 주");
+        tpl.setPatternJson(ScheduleTemplateDto.toJson(List.of(new ScheduleTemplateDto.Shift(0, 20, 600, 960,
+                "오픈", 30, Schedule.Kind.WORK, false))));
+
         return new AppStateDto.Response(AppStateDto.FE_STATE_VERSION, 1,
                 new AppStateDto.Session(true, "employer", "1", "1", "", "10"),
                 List.of(AppStateDto.Person.from(owner), AppStateDto.Person.from(taewoo)),
@@ -197,7 +255,9 @@ class FeContractJsonTest {
                 List.of(AttendanceCalc.view(a, LocalDateTime.of(2026, 5, 14, 12, 0))),
                 List.of(SubstituteRequestDto.Response.from(r, List.of(taewoo), u -> u.getId() == 2 ? 20 : null)),
                 List.of(NoticeViewDto.View.from(n, Map.of(20, LocalDateTime.of(2026, 5, 2, 9, 0)), true, 0)),
-                List.of(NotificationDto.Response.from(noti)));
+                List.of(NotificationDto.Response.from(noti)),
+                List.of(MonthScheduleDto.Response.from(ms)),
+                List.of(ScheduleTemplateDto.Response.from(tpl)));
     }
 
     private static User user(int id, String name) {

@@ -12,7 +12,7 @@ import java.util.List;
 public class AppStateDto {
 
     /** FE AppState.version 과 같아야 한다. 다르면 FE 가 버리고 시드로 시작한다. */
-    public static final int FE_STATE_VERSION = 3;
+    public static final int FE_STATE_VERSION = 4;
 
     public record Response(
             int v,
@@ -25,7 +25,9 @@ public class AppStateDto {
             List<AttendanceViewDto.View> attendance,
             List<SubstituteRequestDto.Response> subs,
             List<NoticeViewDto.View> notices,
-            List<NotificationDto.Response> notifications) {}
+            List<NotificationDto.Response> notifications,
+            List<MonthScheduleDto.Response> schedules,
+            List<ScheduleTemplateDto.Response> templates) {}
 
     /** FE Session. employeeId/ownerId 는 사람(User) id. 매장이 없으면 빈 문자열(FE 가 null 을 못 받음). */
     public record Session(

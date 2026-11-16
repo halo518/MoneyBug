@@ -13,6 +13,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.util.List;
+
 public class StorePartDto {
 
     @Getter
@@ -52,6 +54,12 @@ public class StorePartDto {
         }
     }
 
+    /** PUT /stores/{id}/parts. id 는 숫자 또는 문자열, 새 파트는 null·"" . */
+    public record SaveRequest(@NotNull List<Item> parts) {}
+
+    public record Item(String id, String name, StorePart.Tone tone, Integer startMin, Integer endMin,
+                       Integer breakMin, Integer need) {}
+
     @Getter
     @Builder
     @NoArgsConstructor
@@ -63,6 +71,8 @@ public class StorePartDto {
         private Integer startMin;
         private Integer endMin;
         private Integer need;
+        private StorePart.Tone tone;
+        private Integer breakMin;
 
         public static Response from(StorePart part) {
             return Response.builder()
@@ -72,6 +82,8 @@ public class StorePartDto {
                     .startMin(part.getStartMin())
                     .endMin(part.getEndMin())
                     .need(part.getNeed())
+                    .tone(part.getTone())
+                    .breakMin(part.getBreakMin())
                     .build();
         }
     }
