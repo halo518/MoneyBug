@@ -2,6 +2,7 @@ package com.example.moneybug.config;
 
 import com.example.moneybug.auth.jwt.JwtAuthenticationFilter;
 import com.example.moneybug.auth.jwt.JwtProvider;
+import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -32,6 +33,8 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/**").permitAll()
+                        // 롱 폴링(DeferredResult) 결과를 쓰는 비동기 디스패치. 첫 요청은 이미 인증됐다.
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         // Swagger UI / OpenAPI 문서 (화면 접근은 열어 두고, API 호출은 Authorize 의 토큰으로 인증)
                         .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         .anyRequest().authenticated())

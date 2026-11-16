@@ -32,6 +32,7 @@ import java.util.List;
 public class StoreController {
 
     private final StoreService storeService;
+    private final com.example.moneybug.service.StoreChangeHub changeHub;
 
     @Operation(summary = "매장 생성", description = "상호명·주소 필수. 매장 코드와 기본 파트(오픈/미들/마감)를 자동 생성해요. 권한: 로그인")
     @PostMapping
@@ -83,6 +84,8 @@ public class StoreController {
     public ResponseEntity<StoreDetailDto.JoinResponse> requestJoin(@AuthenticationPrincipal Long userId,
                                                                    @Valid @RequestBody StoreDetailDto.JoinRequest request) {
         StoreDetailDto.JoinResponse response = storeService.requestJoin(userId.intValue(), request.code());
+        // 경로에 storeId 가 없어 인터셉터가 못 잡는다. 사장님 화면에 가입 신청이 바로 보이게.
+        if (response.result() == StoreDetailDto.JoinResult.REQUESTED) changeHub.bump(response.store().id());
         HttpStatus status = switch (response.result()) {
             case REQUESTED -> HttpStatus.CREATED;
             case NOT_FOUND -> HttpStatus.NOT_FOUND;

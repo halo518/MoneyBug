@@ -66,6 +66,7 @@ public class MonthScheduleService {
     private final ShiftService shiftService;
     private final ScheduleAiService ai;
     private final ScheduleJobStore jobs;
+    private final StoreChangeHub changeHub;
     private final TransactionTemplate tx;
     private final ExecutorService executor = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "schedule-ai");
@@ -78,7 +79,8 @@ public class MonthScheduleService {
                                 AttendanceRepository attendanceRepo, StoreWorkerRepository workerRepo,
                                 StorePartRepository partRepo, OverlapChecker overlapChecker,
                                 ScheduleDeleter deleter, ShiftService shiftService, ScheduleAiService ai,
-                                ScheduleJobStore jobs, PlatformTransactionManager txManager) {
+                                ScheduleJobStore jobs, StoreChangeHub changeHub,
+                                PlatformTransactionManager txManager) {
         this.access = access;
         this.monthRepo = monthRepo;
         this.templateRepo = templateRepo;
@@ -91,6 +93,7 @@ public class MonthScheduleService {
         this.shiftService = shiftService;
         this.ai = ai;
         this.jobs = jobs;
+        this.changeHub = changeHub;
         this.tx = new TransactionTemplate(txManager);
     }
 
@@ -368,6 +371,7 @@ public class MonthScheduleService {
             String finalComment = comment;
             tx.executeWithoutResult(st -> applyGenerated(storeId, ym, planned, finalComment, policy, priority));
             jobs.done(jobId, "");
+            changeHub.bump(storeId); // 백그라운드 생성은 요청이 끝난 뒤라 인터셉터가 못 잡는다
         } catch (ApiException e) {
             jobs.fail(jobId, e.getMessage());
         } catch (Exception e) {
