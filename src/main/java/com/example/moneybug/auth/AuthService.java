@@ -34,23 +34,33 @@ public class AuthService {
     private static final String DEV_NAME = "테스트유저";
     private static final String DEV_EMAIL = "test@moneybug.local";
 
+    // 운영 테스트 계정 로그인: TEST_LOGIN_TOKEN(비밀, 16자 이상)과 정확히 같은 토큰이면 테스트 알바생으로 로그인한다. 비우면 꺼짐.
+    private static final int TEST_TOKEN_MIN_LENGTH = 16;
+    private static final long TEST_KAKAO_ID = -2L;
+    private static final String TEST_NAME = "테스트알바";
+    private static final String TEST_EMAIL = "test-employee@moneybug.local";
+
     private final KakaoClient kakaoClient;
     private final UserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final JwtProvider jwtProvider;
     private final Duration refreshTtl;
     private final boolean devLoginEnabled;
+    private final byte[] testLoginToken;
 
     public AuthService(KakaoClient kakaoClient, UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository, JwtProvider jwtProvider,
                        @Value("${jwt.refresh-ttl-seconds}") long refreshTtlSeconds,
-                       @Value("${auth.dev-login.enabled:true}") boolean devLoginEnabled) {
+                       @Value("${auth.dev-login.enabled:true}") boolean devLoginEnabled,
+                       @Value("${auth.test-login.token:}") String testLoginToken) {
         this.kakaoClient = kakaoClient;
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtProvider = jwtProvider;
         this.refreshTtl = Duration.ofSeconds(refreshTtlSeconds);
         this.devLoginEnabled = devLoginEnabled;
+        this.testLoginToken = testLoginToken == null || testLoginToken.length() < TEST_TOKEN_MIN_LENGTH
+                ? new byte[0] : testLoginToken.getBytes(StandardCharsets.UTF_8);
         if (devLoginEnabled) {
             log.warn("[DEV LOGIN] auth.dev-login.enabled=true: the Kakao token \"{}\" skips Kakao verification "
                     + "and logs in as a test user. NEVER enable this outside a local environment.", DEV_TOKEN);
@@ -64,6 +74,10 @@ public class AuthService {
         // 기본은 켜짐이며, 운영에서는 DEV_LOGIN_ENABLED=false 로 반드시 꺼야 한다.
         if (devLoginEnabled && DEV_TOKEN.equals(kakaoAccessToken)) {
             return login(new KakaoUser(DEV_KAKAO_ID, DEV_NAME, DEV_EMAIL, null));
+        }
+        if (testLoginToken.length > 0 && kakaoAccessToken != null && MessageDigest.isEqual(testLoginToken,
+                kakaoAccessToken.getBytes(StandardCharsets.UTF_8))) {
+            return login(new KakaoUser(TEST_KAKAO_ID, TEST_NAME, TEST_EMAIL, null));
         }
         kakaoClient.verifyAppId(kakaoAccessToken);
         return login(kakaoClient.fetchUser(kakaoAccessToken));
