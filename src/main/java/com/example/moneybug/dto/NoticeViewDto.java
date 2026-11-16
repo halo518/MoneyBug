@@ -14,13 +14,13 @@ public class NoticeViewDto {
             Integer id,
             Integer storeId,
             String title,
-            String content,
+            @JsonProperty("body") String content,
             Notice.Category category,
             boolean required,
             boolean pinned,
             LocalDateTime createdAt,
             LocalDateTime remindedAt,
-            /** staffId -> 읽은 시각. 사장님에게만 채운다(직원에겐 null) */
+            /** staffId -> 읽은 시각. 사장님은 전원, 직원은 본인 것만 */
             Map<Integer, LocalDateTime> readBy,
             /** computed: 요청자 기준 */
             @JsonProperty("isRead") boolean isRead,
@@ -28,7 +28,9 @@ public class NoticeViewDto {
             Integer unreadCount) {
 
         public static View from(Notice n, Map<Integer, LocalDateTime> readBy, boolean isRead, Integer unreadCount) {
-            return new View(n.getId(), n.getStore().getId(), n.getTitle(), n.getContent(), n.getCategory(),
+            // 예전 행은 title 이 null 일 수 있다. FE 는 null 을 못 받는다.
+            return new View(n.getId(), n.getStore().getId(), n.getTitle() == null ? "" : n.getTitle(),
+                    n.getContent() == null ? "" : n.getContent(), n.getCategory(),
                     n.isRequired(), n.isPinned(), n.getCreatedAt(), n.getRemindedAt(), readBy, isRead, unreadCount);
         }
     }

@@ -1,5 +1,7 @@
 package com.example.moneybug.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.entity.User;
@@ -24,11 +26,13 @@ public class StoreDto {
     @NoArgsConstructor
     public static class UpdateRequest {
         @Size(max = 100)
+        @JsonProperty("name")
         private String storeName;
 
         @Size(max = 255)
         private String address;
 
+        @JsonProperty("isSmall")
         private Boolean underFive;
 
         private StoreWorker.TaxType defaultDeduction;
@@ -39,6 +43,7 @@ public class StoreDto {
     @Setter
     @NoArgsConstructor
     public static class SettingsRequest {
+        @JsonProperty("isSmall")
         private Boolean underFive;
         private Boolean noticeRequiredDefault;
         private Boolean substitutePush;
@@ -50,10 +55,13 @@ public class StoreDto {
     @AllArgsConstructor
     public static class Response {
         private Integer id;
+        @JsonProperty("ownerPersonId")
         private Integer employerId;
+        @JsonProperty("name")
         private String storeName;
         private String address;
         private String code;
+        @JsonProperty("isSmall")
         private boolean underFive;
         private boolean noticeRequiredDefault;
         private boolean substitutePush;

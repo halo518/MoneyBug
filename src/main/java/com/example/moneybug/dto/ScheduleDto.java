@@ -30,9 +30,11 @@ public class ScheduleDto {
     @NoArgsConstructor
     public static class Request {
         @NotNull
+        @JsonProperty("staffId")
         private Integer mappingId;
 
         @NotNull
+        @JsonProperty("date")
         private LocalDate workDate;
 
         // 하루 기준 분 (09:30 -> 570). endMin <= startMin 이면 야간(다음 날까지)
@@ -57,6 +59,7 @@ public class ScheduleDto {
 
         private boolean timeTbd = false;
 
+        @JsonProperty("isSubstitute")
         private boolean substitute = false;
 
         /** 연관 엔티티(매장-직원 매핑)는 서비스에서 조회해 넘겨준다. */
@@ -81,7 +84,11 @@ public class ScheduleDto {
     @AllArgsConstructor
     public static class Response {
         private Integer id;
+        private Integer storeId;
+        // JSON 이름은 FE models.dart Shift 와 같게
+        @JsonProperty("staffId")
         private Integer mappingId;
+        @JsonProperty("date")
         private LocalDate workDate;
         private Integer startMin;
         private Integer endMin;
@@ -89,7 +96,9 @@ public class ScheduleDto {
         private int breakMin;
         private Schedule.Kind kind;
         private boolean timeTbd;
+        @JsonProperty("isSubstitute")
         private boolean substitute;
+        @JsonProperty("originalStaffId")
         private Integer originalMappingId;
         // computed (JSON 이름은 설계서와 같은 isWork)
         @JsonProperty("isWork")
@@ -99,11 +108,12 @@ public class ScheduleDto {
         public static Response from(Schedule schedule) {
             return Response.builder()
                     .id(schedule.getId())
+                    .storeId(schedule.getStoreWorker().getStore().getId())
                     .mappingId(schedule.getStoreWorker().getId())
                     .workDate(schedule.getWorkDate())
                     .startMin(schedule.getStartMin())
                     .endMin(schedule.getEndMin())
-                    .part(schedule.getPart())
+                    .part(schedule.getPart() == null ? "" : schedule.getPart()) // FE 는 null 을 못 받음
                     .breakMin(schedule.getBreakMin())
                     .kind(schedule.getKind())
                     .timeTbd(schedule.isTimeTbd())

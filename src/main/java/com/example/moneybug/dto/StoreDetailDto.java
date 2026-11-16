@@ -1,5 +1,7 @@
 package com.example.moneybug.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StorePart;
 import com.example.moneybug.entity.StoreWorker;
@@ -13,11 +15,12 @@ public class StoreDetailDto {
 
     public record Response(
             Integer id,
-            Integer employerId,
-            String storeName,
+            // JSON 이름은 FE models.dart Store 와 같게
+            @JsonProperty("ownerPersonId") Integer employerId,
+            @JsonProperty("name") String storeName,
             String address,
             String code,
-            boolean underFive,
+            @JsonProperty("isSmall") boolean underFive,
             boolean noticeRequiredDefault,
             boolean substitutePush,
             StoreWorker.TaxType defaultDeduction,
@@ -53,7 +56,12 @@ public class StoreDetailDto {
     public record JoinRequest(@jakarta.validation.constraints.NotBlank String code) {}
 
     /** 가입 결과 (설계서 JoinResult) */
-    public enum JoinResult { REQUESTED, ALREADY_MEMBER, ALREADY_PENDING, NOT_FOUND }
+    public enum JoinResult {
+        REQUESTED, ALREADY_MEMBER, ALREADY_PENDING, NOT_FOUND;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return com.example.moneybug.entity.EnumJson.camel(this); }
+    }
 
     public record JoinStoreRef(Integer id, String name) {}
 

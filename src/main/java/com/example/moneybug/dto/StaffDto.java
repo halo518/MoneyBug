@@ -1,6 +1,7 @@
 package com.example.moneybug.dto;
 
 import com.example.moneybug.entity.StoreWorker;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -9,11 +10,13 @@ import java.time.LocalDateTime;
 public record StaffDto(
         Integer id,
         Integer storeId,
+        Integer personId,
         UserDto.Response person,
         String part,
         StoreWorker.Kind kind,
-        Integer hourlyWage,
-        StoreWorker.TaxType taxType,
+        // JSON 이름은 FE models.dart Staff 와 같게
+        @JsonProperty("wage") Integer hourlyWage,
+        @JsonProperty("deduction") StoreWorker.TaxType taxType,
         boolean weeklyHolidayAuto,
         boolean premium,
         StoreWorker.Tone tone,
@@ -22,12 +25,19 @@ public record StaffDto(
         LocalDateTime requestedAt,
         ContractDto.Response contract) {
 
+    /** 다른 직원의 계약서를 숨길 때 (직원 화면용 /me/state). */
+    public StaffDto withoutContract() {
+        return new StaffDto(id, storeId, personId, person, part, kind, hourlyWage, taxType, weeklyHolidayAuto,
+                premium, tone, status, joinedAt, requestedAt, null);
+    }
+
     public static StaffDto from(StoreWorker sw, ContractDto.Response contract) {
         return new StaffDto(
                 sw.getId(),
                 sw.getStore().getId(),
+                sw.getWorker().getId(),
                 UserDto.Response.from(sw.getWorker()),
-                sw.getPart(),
+                sw.getPart() == null ? "" : sw.getPart(), // FE 는 part·joinedAt 을 null 로 받지 못한다
                 sw.getKind(),
                 sw.getHourlyWage(),
                 sw.getTaxType(),
@@ -35,7 +45,8 @@ public record StaffDto(
                 sw.isPremium(),
                 sw.getTone(),
                 sw.getStatus(),
-                sw.getJoinedAt(),
+                sw.getJoinedAt() != null ? sw.getJoinedAt()
+                        : sw.getRequestedAt() != null ? sw.getRequestedAt().toLocalDate() : null,
                 sw.getRequestedAt(),
                 contract);
     }

@@ -9,7 +9,15 @@ import java.time.LocalDateTime;
 public class AttendanceViewDto {
 
     /** 서버 계산값. 저장하지 않는다. */
-    public enum AttStatus { WAITING, WORKING, NORMAL, LATE, ABSENT }
+    public enum AttStatus {
+        WAITING, WORKING, NORMAL, LATE, ABSENT;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return com.example.moneybug.entity.EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static AttStatus fromJson(String v) { return com.example.moneybug.entity.EnumJson.parse(AttStatus.class, v); }
+    }
 
     public record View(
             Integer id,

@@ -1,5 +1,7 @@
 package com.example.moneybug.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import com.example.moneybug.entity.Notification;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -18,6 +20,7 @@ public class NotificationDto {
     public static class Response {
         private Integer id;
         private Integer storeId;
+        @JsonProperty("toPersonId")
         private Integer toUserId;
         private Notification.Type type;
         private String title;

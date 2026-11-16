@@ -84,13 +84,37 @@ public class StoreWorker {
     }
 
     // [추가] 설계서 StaffStatus. 가입 신청 = PENDING. 기존 문자열 'ACTIVE' 와 호환된다.
-    public enum Status { PENDING, ACTIVE, LEFT, REJECTED }
+    public enum Status {
+        PENDING, ACTIVE, LEFT, REJECTED;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Status fromJson(String v) { return EnumJson.parse(Status.class, v); }
+    }
 
     // [추가] 설계서 StaffKind. MANAGER/FULLTIME 은 유동 근무(part = "직원", 시간 직접 지정)
-    public enum Kind { MANAGER, FULLTIME, PART_TIMER, MINOR }
+    public enum Kind {
+        MANAGER, FULLTIME, PART_TIMER, MINOR;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Kind fromJson(String v) { return EnumJson.parse(Kind.class, v); }
+    }
 
     // [추가] 설계서 Tone. 아바타 색(표시용)
-    public enum Tone { PRIMARY, ACCENT, INFO, DANGER }
+    public enum Tone {
+        PRIMARY, ACCENT, INFO, DANGER;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Tone fromJson(String v) { return EnumJson.parse(Tone.class, v); }
+    }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -1,5 +1,7 @@
 package com.example.moneybug.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import com.example.moneybug.entity.Notice;
 import com.example.moneybug.entity.Store;
 import jakarta.validation.constraints.NotBlank;
@@ -26,6 +28,7 @@ public class NoticeDto {
         private String title;
 
         @NotBlank
+        @JsonProperty("body")
         private String content;
 
         private Notice.Category category = Notice.Category.GENERAL;
@@ -53,6 +56,7 @@ public class NoticeDto {
         private Integer id;
         private Integer storeId;
         private String title;
+        @JsonProperty("body")
         private String content;
         private Notice.Category category;
         private boolean required;

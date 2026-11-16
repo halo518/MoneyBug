@@ -145,7 +145,10 @@ public class NoticeService {
             int unreadCount = (int) activeIds.stream().filter(id -> !readBy.containsKey(id)).count();
             return NoticeViewDto.View.from(n, readBy, true, unreadCount);
         }
-        return NoticeViewDto.View.from(n, null, myStaffId != null && readBy.containsKey(myStaffId), null);
+        // FE 계약: readBy 는 항상 맵. 직원에게는 본인 읽음 기록만 준다(다른 직원 읽음 여부는 숨김).
+        Map<Integer, LocalDateTime> mine = myStaffId != null && readBy.containsKey(myStaffId)
+                ? Map.of(myStaffId, readBy.get(myStaffId)) : Map.of();
+        return NoticeViewDto.View.from(n, mine, !mine.isEmpty(), null);
     }
 
     private Notice find(Integer storeId, Integer noticeId) {

@@ -185,7 +185,7 @@ public class StoreService {
     }
 
     /** 매장 + 파트 + 확정된 월별 인건비(이번 달 이전, Payroll 합계). */
-    private StoreDetailDto.Response detail(Store store) {
+    public StoreDetailDto.Response detail(Store store) {
         List<StorePart> parts = storePartRepository.findByStoreIdOrderByStartMinAsc(store.getId());
         Map<String, Integer> monthlyTotals = new LinkedHashMap<>();
         String current = YearMonth.from(TimeUtil.today()).toString();
