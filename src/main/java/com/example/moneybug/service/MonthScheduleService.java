@@ -166,7 +166,11 @@ public class MonthScheduleService {
         Set<Integer> kept = new HashSet<>();
 
         for (MonthScheduleCommandDto.ShiftItem it : req.shifts()) {
+            Integer id = numericId(it.id());
+            Schedule cur = id == null ? null : mine.get(id);
             StoreWorker sw = active.get(it.staffId());
+            // 퇴사자의 지난 근무도 목록에 그대로 실려 온다. 담당자가 그대로면 받고, 새로 배정하는 것만 막는다.
+            if (sw == null && cur != null && cur.getStoreWorker().getId().equals(it.staffId())) sw = cur.getStoreWorker();
             if (sw == null) throw ApiException.badRequest("STAFF_NOT_FOUND", "재직 중인 직원이 아니에요");
             if (it.date().isBefore(first) || it.date().isAfter(last)) {
                 throw ApiException.badRequest("DATE_OUT_OF_MONTH", month + " 근무표에 다른 달 날짜가 섞여 있어요");
@@ -174,8 +178,6 @@ public class MonthScheduleService {
             if (it.startMin() < 0 || it.startMin() > 1439 || it.endMin() < 0 || it.endMin() > 2880) {
                 throw ApiException.badRequest("INVALID_TIME", "근무 시각이 올바르지 않아요");
             }
-            Integer id = numericId(it.id());
-            Schedule cur = id == null ? null : mine.get(id);
             if (cur != null) kept.add(cur.getId());
             if (cur != null && withAttendance.contains(cur.getId())) {
                 if (!cur.getWorkDate().equals(it.date()) || !cur.getStoreWorker().getId().equals(sw.getId())) {
