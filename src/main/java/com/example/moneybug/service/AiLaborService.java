@@ -31,7 +31,8 @@ public class AiLaborService {
     private final String model;
     private final Map<Integer, Deque<Long>> calls = new ConcurrentHashMap<>();
 
-    public AiLaborService(StoreAccess access, RestClient.Builder builder,
+    @org.springframework.beans.factory.annotation.Autowired
+    public AiLaborService(StoreAccess access,
                           @Value("${app.ai.api-key:}") String apiKey,
                           @Value("${app.ai.model:claude-sonnet-5-5}") String model) {
         this.access = access;
@@ -40,7 +41,8 @@ public class AiLaborService {
         var factory = new JdkClientHttpRequestFactory(
                 java.net.http.HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build());
         factory.setReadTimeout(Duration.ofSeconds(60));
-        this.client = builder.requestFactory(factory).build();
+        // Boot 4 는 RestClient.Builder 빈이 없다(spring-boot-restclient 모듈 필요). 직접 만든다.
+        this.client = RestClient.builder().requestFactory(factory).build();
     }
 
     /** 테스트용: RestClient 를 직접 주입. */
