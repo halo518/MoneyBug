@@ -30,6 +30,9 @@ public class AuthController {
     public record RefreshRequest(@NotBlank String refreshToken) {}
 
     private static final String STATE_COOKIE = "kakao_state";
+    /** 앱(iOS/Android) 로그인 표시. 콜백이 웹 대신 앱 스킴으로 돌려보낸다. */
+    private static final String APP_COOKIE = "kakao_app";
+    static final String APP_AUTH = "donbug://auth";
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final AuthService authService;
@@ -52,18 +55,17 @@ public class AuthController {
     }
 
     /** Web: redirect the browser to Kakao. A random state is kept in an HttpOnly cookie to prevent login CSRF. */
-    @Operation(summary = "웹 카카오 로그인 시작", description = "카카오 인증 페이지로 302 리다이렉트해요. state 는 HttpOnly 쿠키에 저장돼요.")
+    @Operation(summary = "웹 카카오 로그인 시작", description = "카카오 인증 페이지로 302 리다이렉트해요. state 는 HttpOnly 쿠키에 저장돼요. "
+            + "app=true 면 콜백이 웹 대신 앱 스킴 donbug://auth?access=..&refresh=.. 으로 돌려보내요.")
     @GetMapping("/kakao/login")
-    public ResponseEntity<Void> kakaoLogin(HttpServletResponse response) {
+    public ResponseEntity<Void> kakaoLogin(@RequestParam(defaultValue = "false") boolean app,
+                                           HttpServletResponse response) {
         byte[] bytes = new byte[16];
         RANDOM.nextBytes(bytes);
         String state = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
 
-        Cookie cookie = new Cookie(STATE_COOKIE, state);
-        cookie.setHttpOnly(true);
-        cookie.setPath("/api/auth/kakao");
-        cookie.setMaxAge(300);
-        response.addCookie(cookie);
+        response.addCookie(authCookie(STATE_COOKIE, state, 300));
+        response.addCookie(authCookie(APP_COOKIE, app ? "1" : "", app ? 300 : 0));
 
         return ResponseEntity.status(302)
                 .header(HttpHeaders.LOCATION, kakaoClient.authorizeUrl(state))
@@ -78,35 +80,44 @@ public class AuthController {
                                               @RequestParam(required = false) String state,
                                               @RequestParam(required = false) String error,
                                               @CookieValue(name = STATE_COOKIE, required = false) String expectedState,
+                                              @CookieValue(name = APP_COOKIE, required = false) String appFlag,
                                               HttpServletResponse response) {
-        Cookie clear = new Cookie(STATE_COOKIE, "");
-        clear.setPath("/api/auth/kakao");
-        clear.setMaxAge(0);
-        response.addCookie(clear);
+        response.addCookie(authCookie(STATE_COOKIE, "", 0));
+        response.addCookie(authCookie(APP_COOKIE, "", 0));
+        String base = "1".equals(appFlag) ? APP_AUTH : frontendUrl + "/#/auth";
 
         String location;
         if (error != null) {
-            location = errorRedirect(frontendUrl, "kakao_denied");
+            location = errorRedirect(base, "kakao_denied");
         } else if (expectedState == null || !expectedState.equals(state)) {
-            location = errorRedirect(frontendUrl, "invalid_state");
+            location = errorRedirect(base, "invalid_state");
         } else if (code == null || code.isBlank()) {
-            location = errorRedirect(frontendUrl, "missing_code");
+            location = errorRedirect(base, "missing_code");
         } else {
             try {
-                location = successRedirect(frontendUrl, authService.loginWithKakaoCode(code));
+                location = successRedirect(base, authService.loginWithKakaoCode(code));
             } catch (RuntimeException e) {
-                location = errorRedirect(frontendUrl, "login_failed");
+                location = errorRedirect(base, "login_failed");
             }
         }
         return ResponseEntity.status(302).header(HttpHeaders.LOCATION, location).build();
     }
 
-    static String successRedirect(String frontendUrl, Tokens t) {
-        return frontendUrl + "/#/auth?access=" + enc(t.accessToken()) + "&refresh=" + enc(t.refreshToken());
+    /** [base]: 웹 {frontendUrl}/#/auth 또는 앱 donbug://auth */
+    static String successRedirect(String base, Tokens t) {
+        return base + "?access=" + enc(t.accessToken()) + "&refresh=" + enc(t.refreshToken());
     }
 
-    static String errorRedirect(String frontendUrl, String code) {
-        return frontendUrl + "/#/auth?error=" + enc(code);
+    static String errorRedirect(String base, String code) {
+        return base + "?error=" + enc(code);
+    }
+
+    private static Cookie authCookie(String name, String value, int maxAge) {
+        Cookie c = new Cookie(name, value);
+        c.setHttpOnly(true);
+        c.setPath("/api/auth/kakao");
+        c.setMaxAge(maxAge);
+        return c;
     }
 
     static String stripTrailingSlash(String url) {
