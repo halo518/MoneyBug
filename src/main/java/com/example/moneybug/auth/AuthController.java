@@ -9,10 +9,13 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Base64;
 
@@ -32,9 +35,13 @@ public class AuthController {
     private final AuthService authService;
     private final KakaoClient kakaoClient;
 
-    public AuthController(AuthService authService, KakaoClient kakaoClient) {
+    private final String frontendUrl;
+
+    public AuthController(AuthService authService, KakaoClient kakaoClient,
+                          @Value("${app.frontend-url}") String frontendUrl) {
         this.authService = authService;
         this.kakaoClient = kakaoClient;
+        this.frontendUrl = stripTrailingSlash(frontendUrl);
     }
 
     /** Mobile app: send the access token obtained from the Kakao SDK. */
@@ -63,20 +70,51 @@ public class AuthController {
                 .build();
     }
 
-    /** Web: Kakao redirects back here with the authorization code. */
-    @Operation(summary = "웹 카카오 로그인 콜백", description = "카카오가 인가 코드와 함께 돌려보내는 주소예요. state 를 검증한 뒤 토큰을 발급해요.")
+    /** Web: Kakao redirects back here. Always answers 302 to the web app (tokens or an error code in the hash). */
+    @Operation(summary = "웹 카카오 로그인 콜백", description = "카카오가 인가 코드와 함께 돌려보내는 주소예요. state 를 검증한 뒤 토큰을 발급하고, "
+            + "웹앱으로 302 리다이렉트해요: 성공 시 {frontendUrl}/#/auth?access=..&refresh=.. , 실패 시 {frontendUrl}/#/auth?error=<코드>.")
     @GetMapping("/kakao/callback")
-    public Tokens kakaoCallback(@RequestParam String code, @RequestParam String state,
-                                @CookieValue(name = STATE_COOKIE, required = false) String expectedState,
-                                HttpServletResponse response) {
-        if (expectedState == null || !expectedState.equals(state)) {
-            throw new AuthException("Invalid OAuth state");
-        }
+    public ResponseEntity<Void> kakaoCallback(@RequestParam(required = false) String code,
+                                              @RequestParam(required = false) String state,
+                                              @RequestParam(required = false) String error,
+                                              @CookieValue(name = STATE_COOKIE, required = false) String expectedState,
+                                              HttpServletResponse response) {
         Cookie clear = new Cookie(STATE_COOKIE, "");
         clear.setPath("/api/auth/kakao");
         clear.setMaxAge(0);
         response.addCookie(clear);
-        return authService.loginWithKakaoCode(code);
+
+        String location;
+        if (error != null) {
+            location = errorRedirect(frontendUrl, "kakao_denied");
+        } else if (expectedState == null || !expectedState.equals(state)) {
+            location = errorRedirect(frontendUrl, "invalid_state");
+        } else if (code == null || code.isBlank()) {
+            location = errorRedirect(frontendUrl, "missing_code");
+        } else {
+            try {
+                location = successRedirect(frontendUrl, authService.loginWithKakaoCode(code));
+            } catch (RuntimeException e) {
+                location = errorRedirect(frontendUrl, "login_failed");
+            }
+        }
+        return ResponseEntity.status(302).header(HttpHeaders.LOCATION, location).build();
+    }
+
+    static String successRedirect(String frontendUrl, Tokens t) {
+        return frontendUrl + "/#/auth?access=" + enc(t.accessToken()) + "&refresh=" + enc(t.refreshToken());
+    }
+
+    static String errorRedirect(String frontendUrl, String code) {
+        return frontendUrl + "/#/auth?error=" + enc(code);
+    }
+
+    static String stripTrailingSlash(String url) {
+        return url.endsWith("/") ? stripTrailingSlash(url.substring(0, url.length() - 1)) : url;
+    }
+
+    private static String enc(String v) {
+        return URLEncoder.encode(v, StandardCharsets.UTF_8);
     }
 
     @Operation(summary = "토큰 갱신", description = "refreshToken 을 소모하고 새 access/refresh 토큰 쌍을 발급해요(회전).")
