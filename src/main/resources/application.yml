@@ -74,6 +74,9 @@ jwt:
 auth:
   dev-login:
     enabled: ${DEV_LOGIN_ENABLED:true}
+  # 운영 테스트 계정: 이 비밀 토큰(16자 이상)을 카카오 토큰 자리에 보내면 "테스트알바" 로 로그인. 비우면 꺼짐.
+  test-login:
+    token: ${TEST_LOGIN_TOKEN:}
 
 # ==========================================
 # Swagger (springdoc)

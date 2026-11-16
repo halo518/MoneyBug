@@ -23,6 +23,10 @@ class AuthServiceDevLoginTest {
     private final JwtProvider jwtProvider = mock(JwtProvider.class);
 
     private AuthService service(boolean devLoginEnabled) {
+        return service(devLoginEnabled, "");
+    }
+
+    private AuthService service(boolean devLoginEnabled, String testLoginToken) {
         when(userRepository.findByKakaoId(any())).thenReturn(java.util.Optional.empty());
         when(userRepository.save(any(User.class))).thenAnswer(inv -> {
             User u = inv.getArgument(0);
@@ -33,7 +37,7 @@ class AuthServiceDevLoginTest {
         when(jwtProvider.createAccessToken(any(Long.class))).thenReturn("our-own-jwt");
         when(jwtProvider.accessTtlSeconds()).thenReturn(1800L);
         return new AuthService(kakaoClient, userRepository, refreshTokenRepository, jwtProvider, 1209600L,
-                devLoginEnabled);
+                devLoginEnabled, testLoginToken);
     }
 
     @Test
@@ -57,5 +61,20 @@ class AuthServiceDevLoginTest {
         doThrow(new AuthException("Invalid Kakao access token")).when(kakaoClient).verifyAppId("test_token");
 
         assertThrows(AuthException.class, () -> service(false).loginWithKakaoAccessToken("test_token"));
+    }
+
+    @Test
+    void secretTestTokenLogsInWithoutKakao() {
+        String secret = "s3cret-test-login-0123";
+        assertEquals("our-own-jwt", service(false, secret).loginWithKakaoAccessToken(secret).accessToken());
+        verifyNoInteractions(kakaoClient);
+    }
+
+    @Test
+    void shortOrWrongTestTokenIsVerifiedAgainstKakao() {
+        doThrow(new AuthException("Invalid Kakao access token")).when(kakaoClient).verifyAppId(any());
+        assertThrows(AuthException.class, () -> service(false, "short").loginWithKakaoAccessToken("short"));
+        assertThrows(AuthException.class,
+                () -> service(false, "s3cret-test-login-0123").loginWithKakaoAccessToken("s3cret-test-login-0124"));
     }
 }
