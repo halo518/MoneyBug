@@ -54,7 +54,15 @@ public class StoreController {
         return storeService.update(userId.intValue(), storeId, request);
     }
 
-    @Operation(summary = "매장 설정 수정", description = "isSmall(5인 미만), 공지 필독 기본값, 대타 푸시. 보낸 것만 반영해요. 권한: 사장님")
+    @Operation(summary = "파트 목록 저장", description = "파트 전체를 통째로 맞춰요. id 있으면 수정(이름 변경은 근무·직원에 전파), 없으면 추가, 빠지면 삭제. 권한: 사장님")
+    @PutMapping("/{storeId}/parts")
+    public List<StorePartDto.Response> saveParts(@AuthenticationPrincipal Long userId,
+                                                 @PathVariable Integer storeId,
+                                                 @Valid @RequestBody StorePartDto.SaveRequest request) {
+        return storeService.savePartList(userId.intValue(), storeId, request.parts());
+    }
+
+    @Operation(summary = "매장 설정 수정", description = "이름·영업시간·규모(sizeMode/isSmall)·공지 필독 기본값·대타 푸시·기본 공제. 보낸 것만 반영해요. 권한: 사장님")
     @PatchMapping("/{storeId}/settings")
     public StoreDto.Response updateSettings(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
                                             @Valid @RequestBody StoreDto.SettingsRequest request) {

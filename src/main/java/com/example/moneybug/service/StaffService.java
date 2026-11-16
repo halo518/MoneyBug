@@ -11,6 +11,7 @@ import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.entity.SubstituteRequest;
 import com.example.moneybug.repository.AttendanceRepository;
 import com.example.moneybug.repository.ScheduleRepository;
+import com.example.moneybug.repository.StorePartRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
 import com.example.moneybug.repository.SubstituteApplicantRepository;
 import com.example.moneybug.repository.SubstituteRequestRepository;
@@ -36,6 +37,8 @@ public class StaffService {
     private final AttendanceRepository attendanceRepository;
     private final SubstituteRequestRepository substituteRequestRepository;
     private final SubstituteApplicantRepository substituteApplicantRepository;
+    private final StorePartRepository storePartRepository;
+    private final StoreService storeService;
     private final StoreAccess access;
     private final StaffAssembler staffAssembler;
     private final ScheduleDeleter scheduleDeleter;
@@ -84,6 +87,7 @@ public class StaffService {
                 : store.getDefaultDeduction() != null ? store.getDefaultDeduction() : StoreWorker.TaxType.NONE);
         sw.setStatus(StoreWorker.Status.ACTIVE);
         sw.setJoinedAt(TimeUtil.today());
+        storeService.syncSize(store);
 
         notifier.sendToStaff(store, sw, Notification.Type.JOIN, store.getStoreName() + " 가입이 승인됐어요",
                 "시급 " + String.format("%,d", sw.getHourlyWage()) + "원", sw.getId());
@@ -115,6 +119,12 @@ public class StaffService {
         if (request.premium() != null) sw.setPremium(request.premium());
         if (request.part() != null) sw.setPart(request.part());
         if (request.kind() != null) sw.setKind(request.kind());
+        if (request.fixedParts() != null) {
+            StaffPrefs.setFixedParts(sw, validFixedParts(storeId, request.fixedParts()));
+        }
+        if (request.workHours() != null) {
+            StaffPrefs.setWorkHours(sw, validWorkHours(request.workHours()));
+        }
         return staffAssembler.toDto(sw);
     }
 
@@ -132,6 +142,7 @@ public class StaffService {
             return; // 멱등
         }
         sw.setStatus(StoreWorker.Status.LEFT);
+        storeService.syncSize(store);
         Integer workerUserId = sw.getWorker().getId();
 
         List<SubstituteRequest> inProgress = substituteRequestRepository.findByStoreAndStatusIn(storeId,
@@ -177,6 +188,36 @@ public class StaffService {
             body = "만료일 " + DateTimeFormatter.ofPattern("yyyy.MM.dd").format(expiry);
         }
         notifier.sendToStaff(store, sw, Notification.Type.CERT, title, body, sw.getId());
+    }
+
+    private List<List<String>> validFixedParts(Integer storeId, List<List<String>> value) {
+        if (value.size() != 7) throw ApiException.badRequest("INVALID_FIXED_PARTS", "고정 근무는 월~일 7칸이어야 해요");
+        java.util.Set<String> names = new java.util.HashSet<>();
+        storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).forEach(p -> names.add(p.getName()));
+        List<List<String>> out = new java.util.ArrayList<>();
+        for (List<String> day : value) {
+            List<String> cell = new java.util.ArrayList<>();
+            for (String n : day == null ? List.<String>of() : day) {
+                if (n == null || !names.contains(n)) {
+                    throw ApiException.badRequest("INVALID_FIXED_PARTS", "매장에 없는 파트예요: " + n);
+                }
+                if (!cell.contains(n)) cell.add(n);
+            }
+            out.add(cell);
+        }
+        return out;
+    }
+
+    private static List<StaffPrefs.WorkHours> validWorkHours(List<StaffPrefs.WorkHours> value) {
+        if (value.size() != 7) throw ApiException.badRequest("INVALID_WORK_HOURS", "근무 시간은 월~일 7칸이어야 해요");
+        for (StaffPrefs.WorkHours h : value) {
+            if (h == null) continue;
+            if (h.startMin() < 0 || h.startMin() > 1439 || h.endMin() <= h.startMin()
+                    || h.endMin() - h.startMin() > 1440) {
+                throw ApiException.badRequest("INVALID_WORK_HOURS", "퇴근 시각은 출근 시각보다 늦어야 해요");
+            }
+        }
+        return value;
     }
 
     private static void requireMinWage(Integer wage) {

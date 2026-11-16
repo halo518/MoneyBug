@@ -11,6 +11,8 @@ public interface StoreWorkerRepository extends JpaRepository<StoreWorker, Intege
 
     List<StoreWorker> findByStoreIdAndStatusIn(Integer storeId, Collection<StoreWorker.Status> statuses);
 
+    List<StoreWorker> findByStoreId(Integer storeId);
+
     List<StoreWorker> findByStoreIdAndStatus(Integer storeId, StoreWorker.Status status);
 
     Optional<StoreWorker> findByIdAndStoreId(Integer id, Integer storeId);

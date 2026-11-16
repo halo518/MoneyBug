@@ -41,6 +41,9 @@ public record StoreCreateRequest(
         store.setStoreName(name.trim());
         store.setAddress(address.trim());
         store.setUnderFive(isSmall == null || isSmall);
+        // isSmall 을 직접 보냈으면 수동 모드, 생략하면 재직 인원으로 자동
+        store.setSizeMode(isSmall == null ? Store.SizeMode.AUTO
+                : isSmall ? Store.SizeMode.UNDER5 : Store.SizeMode.OVER5);
         store.setDefaultDeduction(defaultDeduction != null ? defaultDeduction : StoreWorker.TaxType.BUSINESS_TAX);
         return store;
     }

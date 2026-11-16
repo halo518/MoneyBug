@@ -52,6 +52,11 @@ app:
   ai:
     api-key: ${ANTHROPIC_API_KEY:}
     model: ${AI_MODEL:claude-sonnet-5-5}
+  # 근무표 AI 생성 (Ollama 호환 서버). 키는 비워도 된다.
+  llm:
+    base-url: ${LLM_BASE_URL:https://ai.ruraeru.xyz}
+    model: ${LLM_MODEL:qwen3.5:9b}
+    api-key: ${LLM_API_KEY:}
 
 # ==========================================
 # CORS: Flutter 웹 origin (쉼표로 여러 개, 패턴 허용). 운영에서는 실제 웹 주소로 바꿀 것.

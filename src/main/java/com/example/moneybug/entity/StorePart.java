@@ -15,6 +15,17 @@ import lombok.Setter;
 @NoArgsConstructor
 public class StorePart {
 
+    /** 파트 색(FE 표시용). */
+    public enum Tone {
+        OPEN, MIDDLE, CLOSE;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Tone fromJson(String v) { return EnumJson.parse(Tone.class, v); }
+    }
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "part_id")
@@ -33,6 +44,18 @@ public class StorePart {
 
     @Column(name = "end_min", nullable = false)
     private Integer endMin;
+
+    @Enumerated(EnumType.STRING)
+    @Column(length = 10)
+    private Tone tone = Tone.MIDDLE;
+
+    // 휴게 분. 기존 행은 null 이라 getter 가 0 을 돌려준다.
+    @Column(name = "break_min")
+    private Integer breakMin = 30;
+
+    public Tone getTone() { return tone == null ? Tone.MIDDLE : tone; }
+
+    public int getBreakMin() { return breakMin == null ? 0 : breakMin; }
 
     // 그 파트의 하루 필요 인원
     @Column(nullable = false)
