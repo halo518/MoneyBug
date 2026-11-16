@@ -5,6 +5,8 @@ import com.example.moneybug.auth.kakao.KakaoClient;
 import com.example.moneybug.auth.kakao.KakaoClient.KakaoUser;
 import com.example.moneybug.entity.User; // [수정] user 패키지 삭제 -> entity 패키지로 변경
 import com.example.moneybug.repository.UserRepository; // [수정] user 패키지 삭제 -> repository 패키지로 변경
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,27 +25,46 @@ public class AuthService {
 
     public record Tokens(String accessToken, String refreshToken, String tokenType, long expiresIn) {}
 
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private static final SecureRandom RANDOM = new SecureRandom();
+
+    // 개발용 우회 로그인 (auth.dev-login.enabled=true 일 때만). 실제 카카오 id 는 양수라서 음수 id 로 충돌을 피한다.
+    private static final String DEV_TOKEN = "test_token";
+    private static final long DEV_KAKAO_ID = -1L;
+    private static final String DEV_NAME = "테스트유저";
+    private static final String DEV_EMAIL = "test@moneybug.local";
 
     private final KakaoClient kakaoClient;
     private final UserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final JwtProvider jwtProvider;
     private final Duration refreshTtl;
+    private final boolean devLoginEnabled;
 
     public AuthService(KakaoClient kakaoClient, UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository, JwtProvider jwtProvider,
-                       @Value("${jwt.refresh-ttl-seconds}") long refreshTtlSeconds) {
+                       @Value("${jwt.refresh-ttl-seconds}") long refreshTtlSeconds,
+                       @Value("${auth.dev-login.enabled:true}") boolean devLoginEnabled) {
         this.kakaoClient = kakaoClient;
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtProvider = jwtProvider;
         this.refreshTtl = Duration.ofSeconds(refreshTtlSeconds);
+        this.devLoginEnabled = devLoginEnabled;
+        if (devLoginEnabled) {
+            log.warn("[DEV LOGIN] auth.dev-login.enabled=true: the Kakao token \"{}\" skips Kakao verification "
+                    + "and logs in as a test user. NEVER enable this outside a local environment.", DEV_TOKEN);
+        }
     }
 
     /** Mobile: the app already holds a Kakao access token from the Kakao SDK. */
     @Transactional
     public Tokens loginWithKakaoAccessToken(String kakaoAccessToken) {
+        // 개발용 우회: 토큰이 "test_token" 과 정확히 일치하면 카카오 검증 없이 테스트 사용자로 로그인한다.
+        // 기본은 켜짐이며, 운영에서는 DEV_LOGIN_ENABLED=false 로 반드시 꺼야 한다.
+        if (devLoginEnabled && DEV_TOKEN.equals(kakaoAccessToken)) {
+            return login(new KakaoUser(DEV_KAKAO_ID, DEV_NAME, DEV_EMAIL, null));
+        }
         kakaoClient.verifyAppId(kakaoAccessToken);
         return login(kakaoClient.fetchUser(kakaoAccessToken));
     }
@@ -74,17 +95,23 @@ public class AuthService {
 
     private Tokens login(KakaoUser kakaoUser) {
         String kakaoId = String.valueOf(kakaoUser.kakaoId());
-        // [수정] 신규 가입 시 role/name/contact 는 임시값으로 채우고, 이후 사용자가 직접 입력해 갱신한다.
-        // 기존 사용자의 정보는 덮어쓰지 않는다.
+        // [수정] 신규 가입 시 name 은 카카오 닉네임으로, email/profileImage 는 카카오 값으로 채운다.
+        // role 은 제거됨(관계로 결정). contact 는 선택 항목이라 비워 둔다.
+        // 기존 사용자의 입력값은 덮어쓰지 않고, 비어 있는 email/profileImage 만 보충한다.
         User user = userRepository.findByKakaoId(kakaoId)
                 .orElseGet(() -> {
                     User created = new User();
                     created.setKakaoId(kakaoId);
-                    created.setRole(User.Role.WORKER);
                     created.setName(tempName(kakaoUser.nickname()));
-                    created.setContact("");
+                    created.setFullName(created.getName().isEmpty() ? null : created.getName());
                     return created;
                 });
+        if (user.getEmail() == null) {
+            user.setEmail(kakaoUser.email());
+        }
+        if (user.getProfileImage() == null) {
+            user.setProfileImage(kakaoUser.profileImage());
+        }
         return issue(userRepository.save(user).getId().longValue());
     }
 

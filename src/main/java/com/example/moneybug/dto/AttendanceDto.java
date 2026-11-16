@@ -29,6 +29,9 @@ public class AttendanceDto {
 
         private Integer holidayPayRate = 0;
 
+        // 사장님이 수정/생성할 때 필수 (서비스에서 검증)
+        private String editReason;
+
         /** 연관 엔티티(근무표)는 서비스에서 조회해 넘겨준다. */
         public Attendance toEntity(Schedule schedule) {
             Attendance attendance = new Attendance();
@@ -38,6 +41,7 @@ public class AttendanceDto {
             attendance.setOvertimeMinutes(overtimeMinutes);
             attendance.setCheckMethod(checkMethod);
             attendance.setHolidayPayRate(holidayPayRate);
+            attendance.setEditReason(editReason);
             return attendance;
         }
     }
@@ -54,6 +58,7 @@ public class AttendanceDto {
         private Integer overtimeMinutes;
         private Attendance.CheckMethod checkMethod;
         private Integer holidayPayRate;
+        private String editReason;
 
         public static Response from(Attendance attendance) {
             return Response.builder()
@@ -64,6 +69,7 @@ public class AttendanceDto {
                     .overtimeMinutes(attendance.getOvertimeMinutes())
                     .checkMethod(attendance.getCheckMethod())
                     .holidayPayRate(attendance.getHolidayPayRate())
+                    .editReason(attendance.getEditReason())
                     .build();
         }
     }

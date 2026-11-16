@@ -2,7 +2,11 @@ package com.example.moneybug.dto;
 
 import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.entity.StoreWorker;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -10,9 +14,16 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDate;
-import java.time.LocalTime;
 
 public class ScheduleDto {
+
+    /** 휴게 기본값: 근무 길이 480분 이상 60, 240분 이상 30, 그 외 0 (설계서 §4.5). */
+    public static int defaultBreakMin(int startMin, int endMin) {
+        int length = (endMin <= startMin ? endMin + 1440 : endMin) - startMin;
+        if (length >= 480) return 60;
+        if (length >= 240) return 30;
+        return 0;
+    }
 
     @Getter
     @Setter
@@ -24,11 +35,27 @@ public class ScheduleDto {
         @NotNull
         private LocalDate workDate;
 
+        // 하루 기준 분 (09:30 -> 570). endMin <= startMin 이면 야간(다음 날까지)
         @NotNull
-        private LocalTime startTime;
+        @Min(0)
+        @Max(1439)
+        private Integer startMin;
 
         @NotNull
-        private LocalTime endTime;
+        @Min(0)
+        @Max(1439)
+        private Integer endMin;
+
+        @Size(max = 50)
+        private String part;
+
+        // 생략 시 자동 계산
+        @Min(0)
+        private Integer breakMin;
+
+        private Schedule.Kind kind = Schedule.Kind.WORK;
+
+        private boolean timeTbd = false;
 
         private boolean substitute = false;
 
@@ -37,8 +64,12 @@ public class ScheduleDto {
             Schedule schedule = new Schedule();
             schedule.setStoreWorker(storeWorker);
             schedule.setWorkDate(workDate);
-            schedule.setStartTime(startTime);
-            schedule.setEndTime(endTime);
+            schedule.setStartMin(startMin);
+            schedule.setEndMin(endMin);
+            schedule.setPart(part);
+            schedule.setBreakMin(breakMin != null ? breakMin : defaultBreakMin(startMin, endMin));
+            schedule.setKind(kind);
+            schedule.setTimeTbd(timeTbd);
             schedule.setSubstitute(substitute);
             return schedule;
         }
@@ -52,18 +83,35 @@ public class ScheduleDto {
         private Integer id;
         private Integer mappingId;
         private LocalDate workDate;
-        private LocalTime startTime;
-        private LocalTime endTime;
+        private Integer startMin;
+        private Integer endMin;
+        private String part;
+        private int breakMin;
+        private Schedule.Kind kind;
+        private boolean timeTbd;
         private boolean substitute;
+        private Integer originalMappingId;
+        // computed (JSON 이름은 설계서와 같은 isWork)
+        @JsonProperty("isWork")
+        private boolean isWork;
+        private int scheduledMinutes;
 
         public static Response from(Schedule schedule) {
             return Response.builder()
                     .id(schedule.getId())
                     .mappingId(schedule.getStoreWorker().getId())
                     .workDate(schedule.getWorkDate())
-                    .startTime(schedule.getStartTime())
-                    .endTime(schedule.getEndTime())
+                    .startMin(schedule.getStartMin())
+                    .endMin(schedule.getEndMin())
+                    .part(schedule.getPart())
+                    .breakMin(schedule.getBreakMin())
+                    .kind(schedule.getKind())
+                    .timeTbd(schedule.isTimeTbd())
                     .substitute(schedule.isSubstitute())
+                    .originalMappingId(schedule.getOriginalStoreWorker() == null ? null
+                            : schedule.getOriginalStoreWorker().getId())
+                    .isWork(schedule.isWork())
+                    .scheduledMinutes(schedule.scheduledMinutes())
                     .build();
         }
     }

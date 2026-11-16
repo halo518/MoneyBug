@@ -4,21 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-MoneyBug is a Spring Boot 4.1.1 web app (Java 17 toolchain, Gradle, group `com.example`). It is currently a bare scaffold: only `MoneyBugApplication` and a context-load test exist under `com.example.moneybug`. Not a git repository.
-
-Stack: Spring Data JPA (Hibernate) + Spring Web MVC (`spring-boot-starter-webmvc`) + MySQL (`mysql-connector-j`) + Lombok (annotation processor is configured for both main and test).
-
-## Commands
-
-Use the Gradle wrapper (on Windows PowerShell: `.\gradlew.bat`):
-
-- Run app: `.\gradlew.bat bootRun`
-- Build: `.\gradlew.bat build`
-- All tests: `.\gradlew.bat test`
-- Single test class: `.\gradlew.bat test --tests "com.example.moneybug.MoneyBugApplicationTests"`
-- Single test method: `.\gradlew.bat test --tests "com.example.moneybug.MoneyBugApplicationTests.methodName"`
-
-No lint/formatter is configured.
+MoneyBug backend (Spring Boot, Gradle wrapper; on Windows PowerShell use `.\gradlew.bat`). `api_design.md` in the project root is the API and DB design reference.
 
 ## Runtime configuration
 
@@ -28,7 +14,7 @@ No lint/formatter is configured.
 
 ## Auth architecture
 
-Kakao login for web and mobile converges in `auth/AuthService`: get a Kakao access token -> `KakaoClient.fetchUser` -> upsert `user/User` by `kakaoId` -> issue our own JWT access token (`auth/jwt/JwtProvider`, stateless `SecurityConfig` + `JwtAuthenticationFilter`) and an opaque refresh token (only its SHA-256 is stored in `RefreshToken`; rotated on `/api/auth/refresh`).
+Kakao login for web and mobile converges in `auth/AuthService`: get a Kakao access token -> `KakaoClient.fetchUser` -> upsert `entity/User` by `kakaoId` -> issue our own JWT access token (`auth/jwt/JwtProvider`, stateless `SecurityConfig` + `JwtAuthenticationFilter`) and an opaque refresh token (only its SHA-256 is stored in `RefreshToken`; rotated on `/api/auth/refresh`).
 - Mobile: `POST /api/auth/kakao/token` with the Kakao SDK access token.
 - Web: `GET /api/auth/kakao/login` -> Kakao -> `GET /api/auth/kakao/callback` (state kept in an HttpOnly cookie).
 

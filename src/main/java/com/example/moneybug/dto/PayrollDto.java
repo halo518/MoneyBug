@@ -28,11 +28,14 @@ public class PayrollDto {
         @NotNull
         private Integer totalWorkTime;
 
+        private Integer basePay = 0;
         private Integer totalHolidayAllowance = 0;
         private Integer totalOvertimeAllowance = 0;
         private Integer weeklyHolidayAllowance = 0;
+        private Integer grossPay = 0;
         private Integer deductionAmount = 0;
 
+        /** 실수령액(net) */
         @NotNull
         private Integer finalSalary;
 
@@ -42,9 +45,11 @@ public class PayrollDto {
             payroll.setStoreWorker(storeWorker);
             payroll.setPayrollMonth(payrollMonth);
             payroll.setTotalWorkTime(totalWorkTime);
+            payroll.setBasePay(basePay);
             payroll.setTotalHolidayAllowance(totalHolidayAllowance);
             payroll.setTotalOvertimeAllowance(totalOvertimeAllowance);
             payroll.setWeeklyHolidayAllowance(weeklyHolidayAllowance);
+            payroll.setGrossPay(grossPay);
             payroll.setDeductionAmount(deductionAmount);
             payroll.setFinalSalary(finalSalary);
             return payroll;
@@ -60,9 +65,11 @@ public class PayrollDto {
         private Integer mappingId;
         private String payrollMonth;
         private Integer totalWorkTime;
+        private Integer basePay;
         private Integer totalHolidayAllowance;
         private Integer totalOvertimeAllowance;
         private Integer weeklyHolidayAllowance;
+        private Integer grossPay;
         private Integer deductionAmount;
         private Integer finalSalary;
 
@@ -72,9 +79,11 @@ public class PayrollDto {
                     .mappingId(payroll.getStoreWorker().getId())
                     .payrollMonth(payroll.getPayrollMonth())
                     .totalWorkTime(payroll.getTotalWorkTime())
+                    .basePay(payroll.getBasePay())
                     .totalHolidayAllowance(payroll.getTotalHolidayAllowance())
                     .totalOvertimeAllowance(payroll.getTotalOvertimeAllowance())
                     .weeklyHolidayAllowance(payroll.getWeeklyHolidayAllowance())
+                    .grossPay(payroll.getGrossPay())
                     .deductionAmount(payroll.getDeductionAmount())
                     .finalSalary(payroll.getFinalSalary())
                     .build();
