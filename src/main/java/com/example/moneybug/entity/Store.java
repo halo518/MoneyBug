@@ -60,10 +60,11 @@ public class Store {
     @Column(name = "schedule_confirmed_at")
     private LocalDateTime scheduleConfirmedAt;
 
-    /** 매장 코드 후보 생성 (예: BUG-8K2D). 중복 검사는 서비스에서 한다. */
+    /** 매장 코드 후보 생성 (예: CAFE-8K2D). FE 입력칸이 8칸이라 영숫자 8자 + 가운데 '-'. 중복 검사는 서비스에서 한다. */
     public static String newCode() {
-        StringBuilder sb = new StringBuilder("BUG-");
-        for (int i = 0; i < 4; i++) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 8; i++) {
+            if (i == 4) sb.append('-');
             sb.append(CODE_CHARS.charAt(RANDOM.nextInt(CODE_CHARS.length())));
         }
         return sb.toString();
