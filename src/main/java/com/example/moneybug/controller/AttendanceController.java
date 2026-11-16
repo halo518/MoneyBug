@@ -32,13 +32,19 @@ public class AttendanceController {
 
     private final AttendanceService attendanceService;
 
-    /** 본문(qrToken)은 선택. */
+    /** 본문(qrToken) 필수 — 서비스가 검증한다(없으면 400 INVALID_QR). */
     @Operation(summary = "출근", description = "근무 시작 30분 전부터 종료 전까지. 이미 기록이 있으면 기존 기록 반환(멱등). 권한: 본인(직원)")
     @PostMapping("/stores/{storeId}/shifts/{shiftId}/clock-in")
     public AttendanceViewDto.View clockIn(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
                                           @PathVariable Integer shiftId,
                                           @RequestBody(required = false) AttendanceViewDto.ClockInRequest request) {
         return attendanceService.clockIn(userId.intValue(), storeId, shiftId, request);
+    }
+
+    @Operation(summary = "출근 QR 토큰", description = "30초마다 바뀌는 매장 QR 토큰. 권한: 사장님")
+    @GetMapping("/stores/{storeId}/qr-token")
+    public AttendanceViewDto.QrToken qrToken(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId) {
+        return attendanceService.qrToken(userId.intValue(), storeId);
     }
 
     @Operation(summary = "퇴근", description = "내 열린 출근 기록에 퇴근을 기록해요. 없으면 404. 권한: 본인(직원)")

@@ -17,6 +17,11 @@ spring:
   # ==========================================
   # JPA (Hibernate)
   # ==========================================
+  # 보건증 사진(카메라 원본)은 기본 1MB 를 넘는다.
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
   jpa:
     hibernate:
       # update: Entity 클래스 기준으로 DB 테이블을 자동 생성/수정한다.
@@ -43,6 +48,10 @@ kakao:
 # 웹 카카오 로그인 후 브라우저를 돌려보낼 Flutter 웹앱 주소 (끝의 / 는 제거됨)
 app:
   frontend-url: ${FRONTEND_URL:http://localhost:3004}
+  # AI 노무 도우미 (Anthropic). 키가 비면 AI_DISABLED(503).
+  ai:
+    api-key: ${ANTHROPIC_API_KEY:}
+    model: ${AI_MODEL:claude-sonnet-5-5}
 
 # ==========================================
 # CORS: Flutter 웹 origin (쉼표로 여러 개, 패턴 허용). 운영에서는 실제 웹 주소로 바꿀 것.

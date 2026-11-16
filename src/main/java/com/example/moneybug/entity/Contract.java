@@ -56,6 +56,9 @@ public class Contract {
 
     // ---- 서명 증빙 (설계서 §4.4, §10-8: 법적 효력을 위해 이미지·IP·약관 버전 보관) ----
 
+    @Column(name = "owner_signature_url", length = 500)
+    private String ownerSignatureUrl;
+
     @Column(name = "employee_signature_url", length = 500)
     private String employeeSignatureUrl;
 

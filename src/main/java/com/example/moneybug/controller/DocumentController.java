@@ -9,7 +9,14 @@ import com.example.moneybug.service.DocumentService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import com.example.moneybug.service.FileStorage;
+import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.multipart.MultipartFile;
+import java.util.Map;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,6 +34,39 @@ import org.springframework.web.bind.annotation.RestController;
 public class DocumentController {
 
     private final DocumentService documentService;
+    private final FileStorage fileStorage;
+
+    private ResponseEntity<byte[]> image(String path) {
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(FileStorage.contentType(path)))
+                .cacheControl(CacheControl.noStore()).body(fileStorage.read(path));
+    }
+
+    @Operation(summary = "내 보건증 사진", description = "이미지 바이트. 없으면 404. 권한: 본인")
+    @GetMapping("/me/health-cert/photo")
+    public ResponseEntity<byte[]> myCertPhoto(@AuthenticationPrincipal Long userId) {
+        return image(documentService.myCertPhotoPath(userId.intValue()));
+    }
+
+    @Operation(summary = "직원 보건증 사진", description = "이미지 바이트. 권한: 그 매장 사장님")
+    @GetMapping("/stores/{storeId}/staff/{staffId}/health-cert/photo")
+    public ResponseEntity<byte[]> staffCertPhoto(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
+                                                 @PathVariable Integer staffId) {
+        return image(documentService.staffCertPhotoPath(userId.intValue(), storeId, staffId));
+    }
+
+    @Operation(summary = "서명 이미지 올리기", description = "multipart: image(PNG). {signatureUrl} 를 계약 서명/작성 API 에 넘겨요. 권한: 로그인")
+    @PostMapping(value = "/me/signatures", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Map<String, String> uploadSignature(@AuthenticationPrincipal Long userId,
+                                               @RequestParam("image") MultipartFile image) {
+        return Map.of("signatureUrl", documentService.saveSignature(userId.intValue(), image));
+    }
+
+    @Operation(summary = "계약서 서명 이미지", description = "who = owner | employee. 권한: 그 매장 사장님·계약 직원")
+    @GetMapping("/stores/{storeId}/staff/{staffId}/contract/signature/{who}")
+    public ResponseEntity<byte[]> signatureImage(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
+                                                 @PathVariable Integer staffId, @PathVariable String who) {
+        return image(documentService.signaturePath(userId.intValue(), storeId, staffId, who));
+    }
 
     /** multipart/form-data: expiry, alertDays, photo */
     @Operation(summary = "보건증 등록/갱신", description = "multipart/form-data: expiry, alertDays(예: 30,14,7,0), photo(이미지) 모두 필수. 재직 중인 모든 매장의 사장님에게 알림이 가요. 권한: 본인")
