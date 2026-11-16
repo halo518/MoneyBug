@@ -1,0 +1,34 @@
+package com.example.moneybug.repository;
+
+import com.example.moneybug.entity.Attendance;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+public interface AttendanceRepository extends JpaRepository<Attendance, Integer> {
+
+    Optional<Attendance> findByScheduleId(Integer scheduleId);
+
+    boolean existsByScheduleId(Integer scheduleId);
+
+    List<Attendance> findByScheduleIdIn(Collection<Integer> scheduleIds);
+
+    @Query("select a from Attendance a join fetch a.schedule s join fetch s.storeWorker w "
+            + "where a.id = :id and w.store.id = :storeId")
+    Optional<Attendance> findByIdAndStore(@Param("id") Integer id, @Param("storeId") Integer storeId);
+
+    /** 내 열린 출근 기록(clockOut == null), 매장 기준. */
+    @Query("select a from Attendance a join fetch a.schedule s join fetch s.storeWorker w "
+            + "where w.worker.id = :userId and w.store.id = :storeId and a.actualEnd is null "
+            + "order by a.actualStart desc")
+    List<Attendance> findOpenByUserAndStore(@Param("userId") Integer userId, @Param("storeId") Integer storeId);
+
+    /** 내 열린 출근 기록, 전체 매장 기준. */
+    @Query("select a from Attendance a join fetch a.schedule s join fetch s.storeWorker w "
+            + "where w.worker.id = :userId and a.actualEnd is null order by a.actualStart desc")
+    List<Attendance> findOpenByUser(@Param("userId") Integer userId);
+}
