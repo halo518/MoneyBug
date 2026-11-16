@@ -46,9 +46,13 @@ public class ContractDto {
         @Size(max = 50)
         private String workDays;
 
-        @NotBlank
+        // 비어도 된다 (FE 가 비워 보낼 수 있음)
         @Size(max = 100)
         private String duty;
+
+        /** POST /me/signatures 로 올린 사장님 서명 id (선택). */
+        @Size(max = 500)
+        private String ownerSignatureUrl;
 
         // 설계서: end > start
         @AssertTrue(message = "종료일은 시작일 이후여야 합니다")
@@ -65,7 +69,8 @@ public class ContractDto {
             contract.setWage(wage);
             contract.setWeeklyHours(weeklyHours);
             contract.setWorkDays(workDays);
-            contract.setDuty(duty);
+            contract.setDuty(duty == null ? "" : duty);
+            contract.setOwnerSignatureUrl(ownerSignatureUrl);
             contract.setOwnerSignedAt(LocalDateTime.now());
             return contract;
         }

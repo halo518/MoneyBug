@@ -56,8 +56,11 @@ public class AttendanceViewDto {
             View attendance,
             AttStatus status) {}
 
-    /** POST .../clock-in — 본문은 선택. 매장별 회전 QR 토큰 (제안). */
+    /** POST .../clock-in — qrToken 필수(서비스가 검증). 매장별 회전 QR 토큰. */
     public record ClockInRequest(String qrToken) {}
+
+    /** GET .../qr-token 응답. */
+    public record QrToken(String token, java.time.Instant expiresAt, int periodSeconds) {}
 
     /** PATCH .../attendance/{id}, POST .../shifts/{id}/attendance — 사유 필수. */
     public record EditRequest(

@@ -16,6 +16,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -40,16 +41,20 @@ public class AttendanceService {
     private final StoreAccess access;
     private final StaffAssembler staffAssembler;
     private final NotificationPublisher notifier;
+    private final QrTokenService qrTokens;
 
     /**
      * POST .../shifts/{shiftId}/clock-in
      * 본인 근무인지, isWork 인지 확인. 이미 기록이 있으면 새로 만들지 않고 기존 기록을 반환(멱등).
      * 종료 시각이 지났으면 409, 시작 30분 전 이전이면 409. 시각은 서버 시각으로 기록한다.
-     * (QR 토큰 발급·검증은 §10-1 미결정이라 아직 검증하지 않는다.)
+     * QR 토큰(qrToken)은 필수. 없거나 만료·위조·다른 매장이면 400 INVALID_QR.
      */
     public AttendanceViewDto.View clockIn(Integer userId, Integer storeId, Integer shiftId,
                                           AttendanceViewDto.ClockInRequest request) {
         StoreWorker me = access.requireActiveStaff(userId, storeId);
+        if (request == null || !qrTokens.verify(storeId, request.qrToken(), Instant.now())) {
+            throw ApiException.badRequest("INVALID_QR", "QR 코드가 만료됐거나 다른 매장 QR이에요");
+        }
         Schedule shift = scheduleRepository.findByIdAndStore(shiftId, storeId)
                 .orElseThrow(() -> ApiException.notFound("근무를 찾을 수 없어요"));
         if (!shift.getStoreWorker().getId().equals(me.getId())) {
@@ -77,6 +82,15 @@ public class AttendanceService {
         a.setCheckMethod(Attendance.CheckMethod.QR);
         attendanceRepository.save(a);
         return AttendanceCalc.view(a, now);
+    }
+
+    /** GET .../qr-token — 사장님. 30초마다 바뀌는 출근 QR 토큰. */
+    @Transactional(readOnly = true)
+    public AttendanceViewDto.QrToken qrToken(Integer userId, Integer storeId) {
+        access.requireOwner(userId, storeId);
+        Instant now = Instant.now();
+        return new AttendanceViewDto.QrToken(qrTokens.issue(storeId, now), qrTokens.expiresAt(now),
+                QrTokenService.PERIOD_SECONDS);
     }
 
     /** POST .../attendance/clock-out — 내 열린 출근 기록(clockOut == null)에 퇴근 기록. 없으면 404. */

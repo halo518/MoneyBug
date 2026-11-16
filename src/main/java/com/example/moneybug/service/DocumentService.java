@@ -68,6 +68,60 @@ public class DocumentService {
         return UserDto.Response.from(user);
     }
 
+    /** POST /me/signatures — 서명 PNG 저장. 돌려주는 id 만 계약 서명 API 가 받는다. */
+    public String saveSignature(Integer userId, MultipartFile image) {
+        if (image == null || image.isEmpty()) {
+            throw ApiException.badRequest("IMAGE_REQUIRED", "서명 이미지를 올려 주세요");
+        }
+        return fileStorage.saveImage(signaturePrefix(userId), image);
+    }
+
+    private static String signaturePrefix(Integer userId) {
+        return "signatures/" + userId;
+    }
+
+    /** 본인이 올린 서명인지 (다른 사람 파일·경로 탈출 차단). */
+    static void requireOwnSignature(Integer userId, String signatureUrl) {
+        if (signatureUrl == null || signatureUrl.contains("..")
+                || !signatureUrl.startsWith(signaturePrefix(userId) + "/")) {
+            throw ApiException.badRequest("INVALID_SIGNATURE", "본인이 올린 서명 이미지가 아니에요");
+        }
+    }
+
+    /** 내 보건증 사진 (경로). 없으면 404. */
+    @Transactional(readOnly = true)
+    public String myCertPhotoPath(Integer userId) {
+        return certPath(userRepository.findById(userId)
+                .orElseThrow(() -> ApiException.notFound("사용자를 찾을 수 없어요")));
+    }
+
+    /** 직원 보건증 사진 (경로). 그 매장 사장님만. */
+    @Transactional(readOnly = true)
+    public String staffCertPhotoPath(Integer userId, Integer storeId, Integer staffId) {
+        access.requireOwner(userId, storeId);
+        return certPath(access.staff(storeId, staffId).getWorker());
+    }
+
+    private static String certPath(User u) {
+        String p = u.getCertPhotoUrl();
+        if (p == null || p.isBlank()) throw ApiException.notFound("보건증 사진이 없어요");
+        return p;
+    }
+
+    /** 서명 이미지 경로. who = owner | employee. 그 매장 사장님이나 계약 당사자 직원만. */
+    @Transactional(readOnly = true)
+    public String signaturePath(Integer userId, Integer storeId, Integer staffId, String who) {
+        StoreWorker sw = access.staff(storeId, staffId);
+        if (!access.isOwner(access.store(storeId), userId) && !sw.getWorker().getId().equals(userId)) {
+            throw ApiException.forbidden("계약 당사자만 볼 수 있어요");
+        }
+        Contract c = contractRepository.findFirstByStoreWorkerIdOrderByCreatedAtDescIdDesc(sw.getId())
+                .orElseThrow(() -> ApiException.notFound("근로계약서가 없어요"));
+        String p = "owner".equals(who) ? c.getOwnerSignatureUrl() : c.getEmployeeSignatureUrl();
+        if (p == null || p.isBlank()) throw ApiException.notFound("서명 이미지가 없어요");
+        return p;
+    }
+
     /**
      * PUT .../staff/{staffId}/contract — 사장님이 작성+서명해서 보냄.
      * 검증: 시급 >= 최저임금, 종료일 > 시작일, 필수 4항목(DTO). 새 계약서를 이력으로 쌓고 직원에게 CONTRACT 알림.
@@ -87,6 +141,11 @@ public class DocumentService {
             throw ApiException.badRequest("INVALID_CONTRACT_PERIOD", "계약 종료일은 시작일 이후여야 해요");
         }
 
+        if (request.getOwnerSignatureUrl() != null && !request.getOwnerSignatureUrl().isBlank()) {
+            requireOwnSignature(userId, request.getOwnerSignatureUrl());
+        } else {
+            request.setOwnerSignatureUrl(null);
+        }
         Contract contract = request.toEntity(sw); // ownerSignedAt = 지금, employeeSignedAt = null
         contractRepository.save(contract);
 
@@ -106,6 +165,7 @@ public class DocumentService {
         if (!sw.getWorker().getId().equals(userId)) {
             throw ApiException.forbidden("본인의 계약서만 서명할 수 있어요");
         }
+        requireOwnSignature(userId, request.getSignatureUrl());
         Contract contract = contractRepository.findFirstByStoreWorkerIdOrderByCreatedAtDescIdDesc(sw.getId())
                 .orElseThrow(() -> ApiException.notFound("서명할 근로계약서가 없어요"));
         if (contract.getEmployeeSignedAt() != null) {
