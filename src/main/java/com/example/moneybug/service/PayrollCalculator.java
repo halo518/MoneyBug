@@ -24,6 +24,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
+ * 급여 규칙의 기준은 FE lib/data/payroll.dart.
  * 급여 계산 엔진 (설계서 §4.10 payslip 계산 규칙 1~8, payroll.dart 와 동일한 규칙).
  *
  * 1. 조회 범위: 그 달 1일이 속한 주의 월요일 ~ 그 달 말일이 속한 주의 일요일 (주휴 계산 때문에 앞뒤 주 포함)

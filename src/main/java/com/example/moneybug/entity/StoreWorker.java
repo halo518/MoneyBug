@@ -174,6 +174,10 @@ public class StoreWorker {
     @Column(name = "joined_at")
     private LocalDate joinedAt;
 
+    // 퇴사(내보낸) 날짜
+    @Column(name = "left_at")
+    private LocalDate leftAt;
+
     // [추가] 가입 신청 시각
     @Column(name = "requested_at")
     private LocalDateTime requestedAt;
