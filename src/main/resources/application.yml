@@ -26,16 +26,16 @@ spring:
     hibernate:
       # update: Entity 클래스 기준으로 DB 테이블을 자동 생성/수정한다.
       ddl-auto: update
-    # 실행되는 SQL 을 콘솔에 보기 좋게 출력한다.
-    show-sql: true
+    # 실행되는 SQL 을 콘솔에 출력한다. 기본은 끔. 로컬 디버깅: SHOW_SQL=true
+    show-sql: ${SHOW_SQL:false}
     properties:
       hibernate:
         format_sql: true
 
 logging:
   level:
-    # JPA 쿼리 파라미터(?)에 들어가는 실제 값을 콘솔에 출력한다.
-    org.hibernate.orm.jdbc.bind: TRACE
+    # JPA 쿼리 파라미터(?) 실제 값 출력 (개인정보가 로그에 남으므로 기본은 끔). 로컬 디버깅: SQL_BIND_LOG=TRACE
+    org.hibernate.orm.jdbc.bind: ${SQL_BIND_LOG:INFO}
 
 # ==========================================
 # Kakao (rest-api-key / client-secret 는 application-secret.yml)
@@ -74,11 +74,11 @@ jwt:
 # ==========================================
 # Dev login bypass (LOCAL ONLY)
 # true 이면 카카오 토큰 "test_token" 이 카카오 인증 없이 테스트 사용자로 로그인된다.
-# 로컬 개발 편의를 위해 기본값은 켜짐(true). 운영 환경에서는 반드시 DEV_LOGIN_ENABLED=false 로 끌 것.
+# 기본값은 꺼짐(false). 로컬 개발에서 쓰려면 DEV_LOGIN_ENABLED=true 로 켠다.
 # ==========================================
 auth:
   dev-login:
-    enabled: ${DEV_LOGIN_ENABLED:true}
+    enabled: ${DEV_LOGIN_ENABLED:false}
   # 운영 테스트 계정: 이 비밀 토큰(16자 이상)을 카카오 토큰 자리에 보내면 "테스트알바" 로 로그인. 비우면 꺼짐.
   test-login:
     token: ${TEST_LOGIN_TOKEN:}
@@ -88,5 +88,10 @@ auth:
 # 우리 DTO 는 StoreDto.Request / ContractDto.Request 처럼 중첩 클래스 이름이 같아서, 기본 설정이면 스키마 이름이
 # 모두 "Request" 로 합쳐져 서로 덮어쓴다(매장 생성에 계약서 필드가 보이던 원인). 전체 클래스 이름으로 구분한다.
 # ==========================================
+# 기본은 꺼짐. 켜려면 SWAGGER_ENABLED=true (SecurityConfig 도 같은 값을 본다).
 springdoc:
   use-fqn: true
+  api-docs:
+    enabled: ${SWAGGER_ENABLED:false}
+  swagger-ui:
+    enabled: ${SWAGGER_ENABLED:false}

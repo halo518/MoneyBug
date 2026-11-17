@@ -85,7 +85,8 @@ public class StoreService {
     /** GET /stores/{storeId} — 사장님·직원. */
     @Transactional(readOnly = true)
     public StoreDetailDto.Response get(Integer userId, Integer storeId) {
-        return detail(access.requireOwnerOrStaff(userId, storeId));
+        Store store = access.requireOwnerOrStaff(userId, storeId);
+        return detail(store, access.isOwner(store, userId));
     }
 
     /** PATCH /stores/{storeId} — 사장님. 보낸 것만 반영. */
@@ -148,6 +149,11 @@ public class StoreService {
 
     /** 영업시간 검증. 400 문구는 계약 그대로. */
     static void validateHours(Store s) {
+        for (int[] h : new int[][]{{s.getOpenMin(), s.getCloseMin()}, {s.getWeekendOpenMin(), s.getWeekendCloseMin()}}) {
+            if (h[0] < 0 || h[0] > 1439 || h[1] > 2880) {
+                throw ApiException.badRequest("INVALID_HOURS", "영업 시각은 0:00~다음 날 24:00 범위여야 합니다.");
+            }
+        }
         if (s.getCloseMin() <= s.getOpenMin()) {
             throw ApiException.badRequest("INVALID_HOURS", "평일 영업 종료 시각은 시작 시각보다 늦어야 합니다.");
         }
@@ -204,8 +210,12 @@ public class StoreService {
         }
 
         // unique(store, name) 때문에 순서가 중요: 삭제 → 임시 이름 → 최종 이름/추가
+        java.util.Set<String> deleted = new java.util.HashSet<>();
         for (StorePart p : existing) {
-            if (!keep.containsKey(p.getId())) storePartRepository.delete(p);
+            if (!keep.containsKey(p.getId())) {
+                deleted.add(p.getName());
+                storePartRepository.delete(p);
+            }
         }
         storePartRepository.flush();
 
@@ -235,6 +245,9 @@ public class StoreService {
         }
         storePartRepository.flush();
 
+        // 이름이 새 파트로 재사용되는 경우(삭제 후 같은 이름 추가)는 지우지 않는다.
+        deleted.removeAll(names);
+        if (!deleted.isEmpty()) dropDeletedParts(storeId, deleted);
         if (!renames.isEmpty()) propagateRenames(storeId, renames);
         return storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
                 .map(StorePartDto.Response::from).toList();
@@ -255,6 +268,19 @@ public class StoreService {
         if (it.tone() != null) p.setTone(it.tone());
         p.setBreakMin(it.breakMin() == null ? 0 : it.breakMin());
         p.setNeed(it.need() == null ? 1 : it.need());
+    }
+
+    /** 삭제된 파트 이름을 직원 기본 파트·고정 근무에서 뺀다(기본 파트는 남은 첫 파트 또는 null). 근무 기록은 그대로. */
+    private void dropDeletedParts(Integer storeId, java.util.Set<String> deleted) {
+        String fallback = storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
+                .map(StorePart::getName).findFirst().orElse(null);
+        for (StoreWorker sw : storeWorkerRepository.findByStoreId(storeId)) {
+            if (sw.getPart() != null && deleted.contains(sw.getPart())) sw.setPart(fallback);
+            if (sw.getFixedParts() != null) {
+                StaffPrefs.setFixedParts(sw, StaffPrefs.fixedParts(sw).stream()
+                        .map(day -> day.stream().filter(n -> !deleted.contains(n)).toList()).toList());
+            }
+        }
     }
 
     /** 이름이 바뀐 파트를 쓰는 근무·직원·고정 근무·템플릿의 이름도 같이 바꾼다(교환도 안전하게 한 번에). */
@@ -313,6 +339,7 @@ public class StoreService {
         if (store == null) {
             return new StoreDetailDto.JoinResponse(StoreDetailDto.JoinResult.NOT_FOUND, null);
         }
+        store = storeRepository.findByIdForUpdate(store.getId()).orElse(store); // 동시 신청 직렬화
         StoreDetailDto.JoinStoreRef ref = new StoreDetailDto.JoinStoreRef(store.getId(), store.getStoreName());
 
         if (access.isOwner(store, userId)
@@ -351,7 +378,13 @@ public class StoreService {
         return new StoreDetailDto.CodeResponse(access.requireOwner(userId, storeId).getCode());
     }
 
-    /** 매장 + 파트 + 확정된 월별 인건비(이번 달 이전, Payroll 합계). */
+    /** 직원·가입 대기자에게 주는 매장 정보: 코드·인건비 추이 없음. */
+    public StoreDetailDto.Response detail(Store store, boolean isOwner) {
+        StoreDetailDto.Response full = detail(store);
+        return isOwner ? full : full.withoutOwnerData();
+    }
+
+    /** 매장 + 파트 + 확정된 월별 인건비(이번 달 이전, Payroll 합계). 사장님용. */
     public StoreDetailDto.Response detail(Store store) {
         List<StorePart> parts = storePartRepository.findByStoreIdOrderByStartMinAsc(store.getId());
         Map<String, Integer> monthlyTotals = new LinkedHashMap<>();

@@ -65,21 +65,24 @@ public class PayrollService {
             }
         }
 
-        LocalDateTime now = TimeUtil.now();
-        List<LaborCostDto.ByStaff> byStaff = new ArrayList<>();
-        long total = 0;
-        for (StoreWorker sw : storeWorkerRepository.findByStoreIdAndStatusIn(storeId,
-                List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.LEFT))) {
-            int gross = calculator.calculate(store, sw, ym, projected, now).gross();
-            byStaff.add(new LaborCostDto.ByStaff(sw.getId(), gross));
-            total += gross;
-        }
+        List<LaborCostDto.ByStaff> byStaff = computeByStaff(store, storeId, ym, projected);
+        long total = byStaff.stream().mapToLong(LaborCostDto.ByStaff::gross).sum();
         return new LaborCostDto.Response(year, month, total, byStaff);
     }
 
-    /** GET /labor-cost/trend?months= — 지난달부터 거슬러 올라가며 확정(저장)된 월별 합계. 데이터 없는 달은 0. */
+    private List<LaborCostDto.ByStaff> computeByStaff(Store store, Integer storeId, YearMonth ym, boolean projected) {
+        LocalDateTime now = TimeUtil.now();
+        List<LaborCostDto.ByStaff> byStaff = new ArrayList<>();
+        for (StoreWorker sw : storeWorkerRepository.findByStoreIdAndStatusIn(storeId,
+                List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.LEFT))) {
+            byStaff.add(new LaborCostDto.ByStaff(sw.getId(), calculator.calculate(store, sw, ym, projected, now).gross()));
+        }
+        return byStaff;
+    }
+
+    /** GET /labor-cost/trend?months= — 지난달부터 거슬러 올라가는 월별 합계. 확정(저장)된 달은 그 값, 아니면 근무·출근 기록으로 계산. */
     public LaborCostDto.TrendResponse trend(Integer userId, Integer storeId, int months) {
-        access.requireOwner(userId, storeId);
+        Store store = access.requireOwner(userId, storeId);
         if (months < 1 || months > 24) {
             throw ApiException.badRequest("INVALID_MONTHS", "months 는 1~24 사이여야 해요");
         }
@@ -91,7 +94,11 @@ public class PayrollService {
         List<LaborCostDto.MonthTotal> items = new ArrayList<>();
         for (int i = months; i >= 1; i--) {
             String key = current.minusMonths(i).toString();
-            items.add(new LaborCostDto.MonthTotal(key, stored.getOrDefault(key, 0L)));
+            Long fixed = stored.get(key);
+            long total = fixed != null ? fixed
+                    : computeByStaff(store, storeId, current.minusMonths(i), false).stream()
+                            .mapToLong(LaborCostDto.ByStaff::gross).sum();
+            items.add(new LaborCostDto.MonthTotal(key, total));
         }
         return new LaborCostDto.TrendResponse(items);
     }

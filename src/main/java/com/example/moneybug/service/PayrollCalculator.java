@@ -67,11 +67,11 @@ public class PayrollCalculator {
                 : attendanceRepository.findByScheduleIdIn(shifts.stream().map(Schedule::getId).toList()).stream()
                 .collect(Collectors.toMap(a -> a.getSchedule().getId(), Function.identity()));
 
-        LocalDate today = now.toLocalDate();
         List<Item> items = new ArrayList<>();
+        int missingClockOut = 0;
         for (Schedule s : shifts) {
             if (s.getKind() == Schedule.Kind.LEAVE) {
-                boolean past = s.getWorkDate().isBefore(today);
+                boolean past = TimeUtil.end(s).isBefore(now); // FE 와 같은 기준(오늘 이미 끝난 연차도 확정)
                 if (past || projected) {
                     items.add(new Item(s, TimeUtil.start(s), TimeUtil.end(s), Math.max(0, s.scheduledMinutes()),
                             !past, true));
@@ -87,7 +87,9 @@ public class PayrollCalculator {
                 LocalDateTime from = a.getActualStart().isAfter(start) ? a.getActualStart() : start;
                 long minutes = Duration.between(from, a.getActualEnd()).toMinutes() - s.getBreakMin();
                 items.add(new Item(s, from, a.getActualEnd(), (int) Math.max(0, minutes), false, false));
-            } else if (projected && TimeUtil.end(s).isAfter(now)) {
+            } else if (a != null && a.getActualStart() != null && TimeUtil.end(s).isBefore(now)) {
+                if (YearMonth.from(s.getWorkDate()).equals(ym)) missingClockOut++; // 출근만 찍고 퇴근 미기록: 0원 처리, 경고용
+            } else if (projected && !TimeUtil.end(s).isBefore(now)) {
                 items.add(new Item(s, TimeUtil.start(s), TimeUtil.end(s), Math.max(0, s.scheduledMinutes()),
                         true, false));
             }
@@ -109,11 +111,11 @@ public class PayrollCalculator {
         List<PayslipDto.Entry> entries = inMonth.stream()
                 .map(i -> new PayslipDto.Entry(i.date(), i.start(), i.end(), i.schedule().getBreakMin(),
                         i.schedule().isSubstitute(), i.planned(), i.minutes(),
-                        i.leave() ? 0 : nightMinutes(i.start(), i.end())))
+                        i.leave() ? 0 : Math.min(nightMinutes(i.start(), i.end()), i.minutes())))
                 .toList();
 
         return new PayslipDto.Response(sw.getId(), ym.getYear(), ym.getMonthValue(), minutes, base, weeklyHoliday,
-                premium, gross, deduction, gross - deduction, projected, entries);
+                premium, gross, deduction, gross - deduction, projected, missingClockOut, entries);
     }
 
     /** 주휴수당: 대타 제외, 주 15시간 이상, 그 주 일요일이 속한 달에 지급. */
@@ -149,7 +151,8 @@ public class PayrollCalculator {
         Map<LocalDate, Integer> minutesByDay = new HashMap<>();
         for (Item i : inMonth) {
             if (i.leave()) continue; // 연차는 가산 대상이 아님
-            night += nightMinutes(i.start(), i.end());
+            // 휴게 시각을 모르므로 야간 분은 실근로 분(휴게 제외)을 넘지 않게 자른다. FE payroll.dart 와 같은 규칙.
+            night += Math.min(nightMinutes(i.start(), i.end()), i.minutes());
             minutesByDay.merge(i.date(), i.minutes(), Integer::sum);
         }
         int over = minutesByDay.values().stream().mapToInt(m -> Math.max(0, m - DAILY_REGULAR_MINUTES)).sum();

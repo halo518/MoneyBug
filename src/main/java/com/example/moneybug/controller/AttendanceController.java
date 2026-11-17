@@ -8,6 +8,7 @@ import com.example.moneybug.dto.MeDto;
 import com.example.moneybug.service.AttendanceService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -38,7 +39,11 @@ public class AttendanceController {
     public AttendanceViewDto.View clockIn(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
                                           @PathVariable Integer shiftId,
                                           @RequestBody(required = false) AttendanceViewDto.ClockInRequest request) {
-        return attendanceService.clockIn(userId.intValue(), storeId, shiftId, request);
+        try {
+            return attendanceService.clockIn(userId.intValue(), storeId, shiftId, request);
+        } catch (DataIntegrityViolationException e) { // 동시 출근: unique 위반 → 새 트랜잭션에서 기존 기록 반환(멱등)
+            return attendanceService.clockIn(userId.intValue(), storeId, shiftId, request);
+        }
     }
 
     @Operation(summary = "출근 QR 토큰", description = "30초마다 바뀌는 매장 QR 토큰. 권한: 사장님")

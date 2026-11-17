@@ -39,12 +39,14 @@ public class AuthController {
     private final KakaoClient kakaoClient;
 
     private final String frontendUrl;
+    private final boolean secureCookies;
 
     public AuthController(AuthService authService, KakaoClient kakaoClient,
                           @Value("${app.frontend-url}") String frontendUrl) {
         this.authService = authService;
         this.kakaoClient = kakaoClient;
         this.frontendUrl = stripTrailingSlash(frontendUrl);
+        this.secureCookies = this.frontendUrl.startsWith("https://");
     }
 
     /** Mobile app: send the access token obtained from the Kakao SDK. */
@@ -112,9 +114,11 @@ public class AuthController {
         return base + "?error=" + enc(code);
     }
 
-    private static Cookie authCookie(String name, String value, int maxAge) {
+    private Cookie authCookie(String name, String value, int maxAge) {
         Cookie c = new Cookie(name, value);
         c.setHttpOnly(true);
+        c.setSecure(secureCookies);
+        c.setAttribute("SameSite", "Lax");
         c.setPath("/api/auth/kakao");
         c.setMaxAge(maxAge);
         return c;

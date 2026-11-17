@@ -78,7 +78,9 @@ openssl rand -base64 48
 | --- | --- | --- |
 | `KAKAO_REDIRECT_URI` | `http://localhost:8080/api/auth/kakao/callback` | 웹 카카오 로그인 콜백 주소 |
 | `KAKAO_APP_ID` | (없음) | 설정하면 다른 카카오 앱에서 발급된 모바일 토큰을 거부 |
-| `DEV_LOGIN_ENABLED` | `true` | 개발용 로그인 우회. **운영 환경에서는 반드시 `false`** |
+| `DEV_LOGIN_ENABLED` | `false` | 개발용 로그인 우회(`test_token`). 로컬 개발에서만 `true` 로 켠다 |
+| `SWAGGER_ENABLED` | `false` | Swagger UI·OpenAPI 문서. 로컬에서 쓰려면 `true` |
+| `SHOW_SQL` / `SQL_BIND_LOG` | `false` / `INFO` | SQL·바인딩 값 로그. 로컬 디버깅 시 `true` / `TRACE` (개인정보가 로그에 남음) |
 
 ## 실행
 
@@ -95,11 +97,11 @@ openssl rand -base64 48
 IntelliJ 에서는 `MoneyBugApplication` 을 바로 실행해도 된다.
 
 - 서버: http://localhost:8080
-- Swagger UI: http://localhost:8080/swagger-ui.html
+- Swagger UI: http://localhost:8080/swagger-ui.html (`SWAGGER_ENABLED=true` 필요)
 
 ## 개발용 로그인
 
-`DEV_LOGIN_ENABLED` 가 `true` (기본값) 이면, 카카오 인증 없이 테스트 사용자로 로그인할 수 있다.
+`DEV_LOGIN_ENABLED=true` 로 실행하면 (기본값은 꺼짐), 카카오 인증 없이 테스트 사용자로 로그인할 수 있다.
 
 ```
 POST /api/auth/kakao/token

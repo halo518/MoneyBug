@@ -49,16 +49,18 @@ public class StaffService {
     public CommonDto.ListResponse<StaffDto> list(Integer userId, Integer storeId, StoreWorker.Status status) {
         Store store = access.requireOwnerOrStaff(userId, storeId);
         Collection<StoreWorker.Status> statuses;
-        if (status != null) {
+        boolean owner = access.isOwner(store, userId);
+        if (!owner) {
+            statuses = List.of(StoreWorker.Status.ACTIVE); // 직원은 ?status= 와 상관없이 재직자만
+        } else if (status != null) {
             statuses = List.of(status);
-        } else if (access.isOwner(store, userId)) {
-            statuses = List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.PENDING);
         } else {
-            statuses = List.of(StoreWorker.Status.ACTIVE);
+            statuses = List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.PENDING);
         }
         return CommonDto.ListResponse.of(storeWorkerRepository.findByStoreIdAndStatusIn(storeId, statuses).stream()
                 .sorted(Comparator.comparing(StoreWorker::getId))
                 .map(staffAssembler::toDto)
+                .map(d -> d.forViewer(owner, userId))
                 .toList());
     }
 
@@ -81,6 +83,9 @@ public class StaffService {
             throw ApiException.conflict("NOT_PENDING", "가입 신청 상태가 아니에요");
         }
         requireMinWage(request.hourlyWage());
+        if (staffRepoActive(storeId, sw)) {
+            throw ApiException.conflict("ALREADY_ACTIVE", "이미 재직 중인 직원이에요");
+        }
 
         sw.setHourlyWage(request.hourlyWage());
         sw.setTaxType(request.taxType() != null ? request.taxType()
@@ -110,6 +115,9 @@ public class StaffService {
     public StaffDto update(Integer userId, Integer storeId, Integer staffId, StaffCommandDto.UpdateRequest request) {
         access.requireOwner(userId, storeId);
         StoreWorker sw = access.staff(storeId, staffId);
+        if (sw.getStatus() != StoreWorker.Status.ACTIVE) {
+            throw ApiException.conflict("NOT_ACTIVE", "재직 중인 직원이 아니에요");
+        }
         if (request.hourlyWage() != null) {
             requireMinWage(request.hourlyWage());
             sw.setHourlyWage(request.hourlyWage());
@@ -117,7 +125,7 @@ public class StaffService {
         if (request.taxType() != null) sw.setTaxType(request.taxType());
         if (request.weeklyHolidayAuto() != null) sw.setWeeklyHolidayAuto(request.weeklyHolidayAuto());
         if (request.premium() != null) sw.setPremium(request.premium());
-        if (request.part() != null) sw.setPart(request.part());
+        if (request.part() != null) sw.setPart(validPart(storeId, request.part()));
         if (request.kind() != null) sw.setKind(request.kind());
         if (request.fixedParts() != null) {
             StaffPrefs.setFixedParts(sw, validFixedParts(storeId, request.fixedParts()));
@@ -188,6 +196,20 @@ public class StaffService {
             body = "만료일 " + DateTimeFormatter.ofPattern("yyyy.MM.dd").format(expiry);
         }
         notifier.sendToStaff(store, sw, Notification.Type.CERT, title, body, sw.getId());
+    }
+
+    private boolean staffRepoActive(Integer storeId, StoreWorker sw) {
+        return storeWorkerRepository.existsByStoreIdAndWorkerIdAndStatus(storeId, sw.getWorker().getId(),
+                StoreWorker.Status.ACTIVE);
+    }
+
+    /** 매장 파트 이름이거나 유동 근무 "직원"(또는 빈 값)만 허용. */
+    private String validPart(Integer storeId, String part) {
+        if (part.isBlank() || "직원".equals(part)) return part;
+        if (storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream().noneMatch(p -> p.getName().equals(part))) {
+            throw ApiException.badRequest("INVALID_PART", "매장에 없는 파트예요: " + part);
+        }
+        return part;
     }
 
     private List<List<String>> validFixedParts(Integer storeId, List<List<String>> value) {

@@ -48,6 +48,9 @@ public class DocumentService {
         if (photo == null || photo.isEmpty()) {
             throw ApiException.badRequest("PHOTO_REQUIRED", "보건증 사진을 올려 주세요");
         }
+        if (request.getExpiry().isBefore(TimeUtil.today())) {
+            throw ApiException.badRequest("EXPIRY_IN_PAST", "만료일이 이미 지났어요. 유효한 보건증을 올려 주세요");
+        }
         List<Integer> alertDays = request.getAlertDays().stream().distinct()
                 .sorted(Comparator.reverseOrder()).toList();
         if (alertDays.stream().anyMatch(d -> d == null || d < 0)) {
@@ -164,6 +167,9 @@ public class DocumentService {
         StoreWorker sw = access.staff(storeId, staffId);
         if (!sw.getWorker().getId().equals(userId)) {
             throw ApiException.forbidden("본인의 계약서만 서명할 수 있어요");
+        }
+        if (sw.getStatus() != StoreWorker.Status.ACTIVE) {
+            throw ApiException.conflict("NOT_ACTIVE", "재직 중인 직원이 아니에요");
         }
         requireOwnSignature(userId, request.getSignatureUrl());
         Contract contract = contractRepository.findFirstByStoreWorkerIdOrderByCreatedAtDescIdDesc(sw.getId())

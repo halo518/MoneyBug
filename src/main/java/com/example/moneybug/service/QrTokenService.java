@@ -20,7 +20,7 @@ public class QrTokenService {
     private final byte[] key;
 
     public QrTokenService(@Value("${jwt.secret}") String secret) {
-        this.key = secret.getBytes(StandardCharsets.UTF_8);
+        this.key = ("qr:" + secret).getBytes(StandardCharsets.UTF_8);
     }
 
     public String issue(Integer storeId, Instant now) {
