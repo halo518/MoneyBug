@@ -27,7 +27,13 @@ public record StaffDto(
         LocalDateTime requestedAt,
         ContractDto.Response contract,
         List<List<String>> fixedParts,
-        List<StaffPrefs.WorkHours> workHours) {
+        List<StaffPrefs.WorkHours> workHours,
+        List<WageEntry> wages,
+        LocalDate leftAt) {
+
+    /** 시급 이력 한 줄: from 부터 wage. */
+    public record WageEntry(LocalDate from, int wage) {}
+
 
     /** 사장님·본인이 아닌 사람에게 줄 모습: 연락처·시급·공제·계약서를 뺀다 (FE 는 wage 0, deduction null 을 받는다). */
     public StaffDto forViewer(boolean isOwner, Integer viewerUserId) {
@@ -42,10 +48,15 @@ public record StaffDto(
                 .certDaysLeft(person.getCertDaysLeft())
                 .build();
         return new StaffDto(id, storeId, personId, p, part, kind, 0, null, weeklyHolidayAuto,
-                false, tone, status, joinedAt, requestedAt, null, fixedParts, workHours);
+                false, tone, status, joinedAt, requestedAt, null, fixedParts, workHours, List.of(), leftAt);
     }
 
     public static StaffDto from(StoreWorker sw, ContractDto.Response contract) {
+        return from(sw, contract, List.of());
+    }
+
+    public static StaffDto from(StoreWorker sw, ContractDto.Response contract,
+                                List<com.example.moneybug.entity.StaffWage> wageRows) {
         return new StaffDto(
                 sw.getId(),
                 sw.getStore().getId(),
@@ -53,7 +64,8 @@ public record StaffDto(
                 UserDto.Response.from(sw.getWorker()),
                 sw.getPart() == null ? "" : sw.getPart(), // FE 는 part·joinedAt 을 null 로 받지 못한다
                 sw.getKind(),
-                sw.getHourlyWage(),
+                com.example.moneybug.service.StaffWageService.wageOn(wageRows,
+                        com.example.moneybug.service.TimeUtil.today(), sw.getHourlyWage()),
                 sw.getTaxType(),
                 sw.isWeeklyHolidayAuto(),
                 sw.isPremium(),
@@ -64,6 +76,8 @@ public record StaffDto(
                 sw.getRequestedAt(),
                 contract,
                 StaffPrefs.fixedParts(sw),
-                StaffPrefs.workHours(sw));
+                StaffPrefs.workHours(sw),
+                wageRows.stream().map(w -> new WageEntry(w.getEffectiveFrom(), w.getWage())).toList(),
+                sw.getLeftAt());
     }
 }
