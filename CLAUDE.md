@@ -20,7 +20,7 @@ The Flutter models (`donBug_FE/lib/data/models.dart`) are the contract; the back
 
 `application.yml` includes `application-secret.yml` (`spring.profiles.include: secret`, gitignored; copy `application-secret.sample.yml`). Every value is `${ENV_VAR:default}`; Docker sets env vars.
 - Secrets: `DB_URL`/`DB_USERNAME`/`DB_PASSWORD`, `JWT_SECRET` (≥ 32 bytes, required), `KAKAO_REST_API_KEY`, `KAKAO_CLIENT_SECRET`.
-- `application.yml`: `KAKAO_REDIRECT_URI`, `KAKAO_APP_ID`, `FRONTEND_URL` (web redirect after Kakao login), `FRONTEND_ORIGIN` (CORS), `DEV_LOGIN_ENABLED` (default **true** for local; production must be false), `TEST_LOGIN_TOKEN`, `ANTHROPIC_API_KEY`/`AI_MODEL`, `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY`, `app.upload-dir` (env `APP_UPLOADDIR`).
+- `application.yml`: `KAKAO_REDIRECT_URI`, `KAKAO_APP_ID`, `FRONTEND_URL` (web redirect after Kakao login), `FRONTEND_ORIGIN` (CORS), `DEV_LOGIN_ENABLED` (default **false**; set true for local dev), `SWAGGER_ENABLED` (default false), `SHOW_SQL`/`SQL_BIND_LOG=TRACE` (SQL logging, off by default), `TEST_LOGIN_TOKEN`, `ANTHROPIC_API_KEY`/`AI_MODEL`, `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY`, `app.upload-dir` (env `APP_UPLOADDIR`).
 - `spring.jpa.hibernate.ddl-auto=update`: entities drive the schema, no migrations. New columns must be nullable or have DB defaults, and code must read null as the default (existing rows). MySQL tables use `utf8mb4_unicode_ci`.
 
 ## Auth

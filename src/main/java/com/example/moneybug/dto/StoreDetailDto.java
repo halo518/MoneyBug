@@ -34,6 +34,13 @@ public class StoreDetailDto {
             /** "yyyy-MM" -> 확정된 월 인건비. 서버가 Payroll 을 집계해 채운다. */
             Map<String, Integer> monthlyTotals) {
 
+        /** 사장님이 아닌 사람에게: 가입 코드와 월별 인건비 추이를 뺀다. */
+        public Response withoutOwnerData() {
+            return new Response(id, employerId, storeName, address, "", underFive, openMin, closeMin,
+                    weekendOpenMin, weekendCloseMin, sizeMode, noticeRequiredDefault, substitutePush,
+                    defaultDeduction, scheduleConfirmedAt, parts, Map.of());
+        }
+
         public static Response from(Store s, List<StorePart> parts, Map<String, Integer> monthlyTotals) {
             return from(s, parts, monthlyTotals, s.isUnderFive());
         }

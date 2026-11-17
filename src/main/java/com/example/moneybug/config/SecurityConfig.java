@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -24,7 +25,8 @@ import java.util.List;
 public class SecurityConfig {
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http, JwtProvider jwtProvider) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, JwtProvider jwtProvider,
+                                            @Value("${springdoc.swagger-ui.enabled:false}") boolean swaggerEnabled) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .cors(Customizer.withDefaults())
@@ -35,8 +37,9 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/**").permitAll()
                         // 롱 폴링(DeferredResult) 결과를 쓰는 비동기 디스패치. 첫 요청은 이미 인증됐다.
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
-                        // Swagger UI / OpenAPI 문서 (화면 접근은 열어 두고, API 호출은 Authorize 의 토큰으로 인증)
-                        .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        // Swagger UI / OpenAPI 문서: SWAGGER_ENABLED=true 일 때만 열린다 (springdoc 도 같은 값으로 켜짐)
+                        .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**")
+                        .access((authentication, context) -> new AuthorizationDecision(swaggerEnabled))
                         .anyRequest().authenticated())
                 .exceptionHandling(e -> e.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
                 .addFilterBefore(new JwtAuthenticationFilter(jwtProvider), UsernamePasswordAuthenticationFilter.class);

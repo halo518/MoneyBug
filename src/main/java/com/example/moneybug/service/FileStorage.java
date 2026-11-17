@@ -45,8 +45,16 @@ public class FileStorage {
         if (!image) {
             throw ApiException.badRequest("INVALID_FILE_TYPE", "이미지 파일만 올릴 수 있어요");
         }
-        if (ext == null) ext = "jpg";
         try {
+            // 클라이언트가 보낸 타입·확장자는 믿지 않고 파일 앞 바이트로 실제 형식을 정한다.
+            byte[] head;
+            try (java.io.InputStream in = file.getInputStream()) {
+                head = in.readNBytes(12);
+            }
+            ext = sniffExt(head);
+            if (ext == null) {
+                throw ApiException.badRequest("INVALID_FILE_TYPE", "이미지 파일만 올릴 수 있어요");
+            }
             Path dir = root.resolve(folder).normalize();
             if (!dir.startsWith(root)) {
                 throw ApiException.badRequest("INVALID_PATH", "저장 경로가 올바르지 않아요");
@@ -58,6 +66,17 @@ public class FileStorage {
         } catch (IOException e) {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "FILE_SAVE_FAILED", "파일을 저장하지 못했어요");
         }
+    }
+
+    /** 매직 바이트로 jpg/png/webp/gif/heic 판별. 아니면 null. */
+    static String sniffExt(byte[] b) {
+        if (b.length >= 3 && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8 && (b[2] & 0xFF) == 0xFF) return "jpg";
+        if (b.length >= 8 && (b[0] & 0xFF) == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G') return "png";
+        if (b.length >= 12 && b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F'
+                && b[8] == 'W' && b[9] == 'E' && b[10] == 'B' && b[11] == 'P') return "webp";
+        if (b.length >= 6 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F' && b[3] == '8') return "gif";
+        if (b.length >= 12 && b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') return "heic";
+        return null;
     }
 
     /** 저장된 파일 바이트. 루트 밖이거나 없으면 404. path 는 saveImage 가 돌려준 값. */

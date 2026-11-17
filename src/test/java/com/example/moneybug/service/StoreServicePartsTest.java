@@ -153,4 +153,21 @@ class StoreServicePartsTest {
         r.setSizeMode(Store.SizeMode.UNDER5);
         assertTrue(service.updateSettings(1, 10, r).isUnderFive());
     }
+
+    @Test
+    void deletedPartIsDroppedFromStaffDefaultAndFixedParts() {
+        worker.setPart("마감");
+        service.savePartList(1, 10, List.of(item("1", "오픈", 480, 720)));
+        assertEquals("오픈", worker.getPart());
+        assertEquals(List.of("오픈"), StaffPrefs.fixedParts(worker).get(0));
+    }
+
+    @Test
+    void hoursOutOfRangeRejected() {
+        StoreDto.SettingsRequest r = new StoreDto.SettingsRequest();
+        r.setOpenMin(-600);
+        r.setCloseMin(0);
+        var ex = assertThrows(ApiException.class, () -> service.updateSettings(1, 10, r));
+        assertEquals("INVALID_HOURS", ex.getCode());
+    }
 }

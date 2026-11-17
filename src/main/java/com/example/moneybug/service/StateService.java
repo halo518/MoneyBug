@@ -9,6 +9,7 @@ import com.example.moneybug.dto.StaffDto;
 import com.example.moneybug.dto.StoreDetailDto;
 import com.example.moneybug.dto.SubstituteRequestDto;
 import com.example.moneybug.entity.Attendance;
+import com.example.moneybug.entity.MonthSchedule;
 import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StoreWorker;
@@ -38,6 +39,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * GET /me/state — FE AppState 한 덩어리. 기존 조회 로직·DTO 를 조합만 한다.
@@ -61,6 +63,13 @@ public class StateService {
     private final NoticeService noticeService;
     private final StaffAssembler staffAssembler;
     private final SubstituteAssembler substituteAssembler;
+
+    /** 작성 중(DRAFT) 달의 근무는 사장님만 본다. 월 메타가 없는 달은 그대로 보인다. */
+    static List<Schedule> visibleShifts(List<Schedule> shifts, java.util.Set<String> draftMonths) {
+        if (draftMonths.isEmpty()) return shifts;
+        return shifts.stream()
+                .filter(s -> !draftMonths.contains(YearMonth.from(s.getWorkDate()).toString())).toList();
+    }
 
     public AppStateDto.Response getState(Integer userId, Integer storeId) {
         User me = userRepository.findById(userId)
@@ -117,7 +126,7 @@ public class StateService {
 
         for (Store store : fullStores.values()) {
             boolean isOwner = store.getEmployer().getId().equals(userId);
-            stores.add(storeService.detail(store));
+            stores.add(storeService.detail(store, isOwner));
             persons.putIfAbsent(store.getEmployer().getId(), AppStateDto.Person.from(store.getEmployer()));
 
             for (StoreWorker sw : storeWorkerRepository.findByStoreIdAndStatusIn(store.getId(),
@@ -126,16 +135,24 @@ public class StateService {
                     continue; // 직원에게는 다른 사람의 가입 신청·퇴사 기록을 주지 않는다
                 }
                 StaffDto dto = staffAssembler.toDto(sw);
-                // 직원에게는 다른 직원의 계약서를 주지 않는다
-                staff.add(isOwner || sw.getWorker().getId().equals(userId) ? dto : dto.withoutContract());
+                // 직원에게는 다른 직원의 연락처·시급·계약서를 주지 않는다
+                staff.add(dto.forViewer(isOwner, userId));
                 persons.putIfAbsent(sw.getWorker().getId(), AppStateDto.Person.from(sw.getWorker()));
             }
 
+            List<MonthSchedule> months = monthScheduleRepository.findByStoreIdOrderByMonthAsc(store.getId());
             List<Schedule> storeShifts = scheduleRepository.findByStoreBetween(store.getId(), from, to);
+            if (!isOwner) {
+                storeShifts = visibleShifts(storeShifts, months.stream()
+                        .filter(m -> m.getStatus() == MonthSchedule.Status.DRAFT)
+                        .map(MonthSchedule::getMonth).collect(Collectors.toSet()));
+            }
             storeShifts.forEach(s -> shifts.add(ScheduleDto.Response.from(s)));
             if (!storeShifts.isEmpty()) {
                 for (Attendance a : attendanceRepository.findByScheduleIdIn(
                         storeShifts.stream().map(Schedule::getId).toList())) {
+                    // 직원은 본인 출근 기록만 (동료의 일급·수정 사유 제외)
+                    if (!isOwner && !a.getSchedule().getStoreWorker().getWorker().getId().equals(userId)) continue;
                     attendance.add(AttendanceCalc.view(a, now));
                 }
             }
@@ -146,8 +163,7 @@ public class StateService {
                     .filter(r -> shiftIds.contains(r.getSchedule().getId()))
                     .forEach(r -> subs.add(substituteAssembler.toDto(r)));
             notices.addAll(noticeService.list(userId, store.getId()).items());
-            monthScheduleRepository.findByStoreIdOrderByMonthAsc(store.getId())
-                    .forEach(m -> schedules.add(MonthScheduleDto.Response.from(m)));
+            months.forEach(m -> schedules.add(MonthScheduleDto.Response.from(m)));
             scheduleTemplateRepository.findByStoreIdOrderByIdAsc(store.getId())
                     .forEach(t -> templates.add(ScheduleTemplateDto.Response.from(t)));
         }
@@ -155,7 +171,7 @@ public class StateService {
         // 가입 대기 매장: 매장 정보와 내 직원 행만
         for (StoreWorker m : memberships) {
             if (fullStores.containsKey(m.getStore().getId())) continue;
-            stores.add(storeService.detail(m.getStore()));
+            stores.add(storeService.detail(m.getStore(), false));
             staff.add(staffAssembler.toDto(m));
             persons.putIfAbsent(m.getStore().getEmployer().getId(),
                     AppStateDto.Person.from(m.getStore().getEmployer()));
