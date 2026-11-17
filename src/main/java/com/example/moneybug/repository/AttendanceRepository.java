@@ -27,6 +27,11 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Integer>
             + "order by a.actualStart desc")
     List<Attendance> findOpenByUserAndStore(@Param("userId") Integer userId, @Param("storeId") Integer storeId);
 
+    /** 퇴근 미기록(actualEnd == null) 전체. 자동 퇴근 처리용. */
+    @Query("select a from Attendance a join fetch a.schedule s join fetch s.storeWorker w "
+            + "join fetch w.worker join fetch w.store st join fetch st.employer where a.actualEnd is null")
+    List<Attendance> findAllOpen();
+
     /** 내 열린 출근 기록, 전체 매장 기준. */
     @Query("select a from Attendance a join fetch a.schedule s join fetch s.storeWorker w "
             + "where w.worker.id = :userId and a.actualEnd is null order by a.actualStart desc")

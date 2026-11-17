@@ -43,6 +43,7 @@ public class StaffService {
     private final StaffAssembler staffAssembler;
     private final ScheduleDeleter scheduleDeleter;
     private final NotificationPublisher notifier;
+    private final StaffWageService wages;
 
     /** GET /staff?status= — 사장님·직원. status 생략 시 사장님은 재직+대기, 직원은 재직만. */
     @Transactional(readOnly = true)
@@ -92,6 +93,7 @@ public class StaffService {
                 : store.getDefaultDeduction() != null ? store.getDefaultDeduction() : StoreWorker.TaxType.NONE);
         sw.setStatus(StoreWorker.Status.ACTIVE);
         sw.setJoinedAt(TimeUtil.today());
+        sw.setLeftAt(null);
         storeService.syncSize(store);
 
         notifier.sendToStaff(store, sw, Notification.Type.JOIN, store.getStoreName() + " 가입이 승인됐어요",
@@ -120,7 +122,9 @@ public class StaffService {
         }
         if (request.hourlyWage() != null) {
             requireMinWage(request.hourlyWage());
-            sw.setHourlyWage(request.hourlyWage());
+            if (!request.hourlyWage().equals(sw.getHourlyWage())) {
+                wages.record(sw, TimeUtil.today(), request.hourlyWage());
+            }
         }
         if (request.taxType() != null) sw.setTaxType(request.taxType());
         if (request.weeklyHolidayAuto() != null) sw.setWeeklyHolidayAuto(request.weeklyHolidayAuto());
@@ -150,6 +154,7 @@ public class StaffService {
             return; // 멱등
         }
         sw.setStatus(StoreWorker.Status.LEFT);
+        sw.setLeftAt(TimeUtil.today());
         storeService.syncSize(store);
         Integer workerUserId = sw.getWorker().getId();
 

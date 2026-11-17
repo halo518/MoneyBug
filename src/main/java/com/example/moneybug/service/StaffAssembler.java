@@ -13,12 +13,13 @@ import org.springframework.stereotype.Component;
 public class StaffAssembler {
 
     private final ContractRepository contractRepository;
+    private final StaffWageService wages;
 
     public StaffDto toDto(StoreWorker sw) {
         ContractDto.Response contract = contractRepository
                 .findFirstByStoreWorkerIdOrderByCreatedAtDescIdDesc(sw.getId())
                 .map(ContractDto.Response::from)
                 .orElse(null);
-        return StaffDto.from(sw, contract);
+        return StaffDto.from(sw, contract, wages.rows(sw.getId()));
     }
 }

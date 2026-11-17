@@ -36,6 +36,7 @@ public class DocumentService {
     private final StoreAccess access;
     private final NotificationPublisher notifier;
     private final FileStorage fileStorage;
+    private final StaffWageService wages;
 
     /**
      * PUT /me/health-cert — expiry/alertDays/photo 모두 필수. certExpiry·certAlertDays·certPhotoUrl 저장.
@@ -151,6 +152,7 @@ public class DocumentService {
         }
         Contract contract = request.toEntity(sw); // ownerSignedAt = 지금, employeeSignedAt = null
         contractRepository.save(contract);
+        wages.record(sw, request.getStartDate(), request.getWage());
 
         notifier.sendToStaff(store, sw, Notification.Type.CONTRACT, "근로계약서 서명 요청",
                 store.getStoreName(), contract.getId());

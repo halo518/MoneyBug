@@ -45,6 +45,10 @@ public class Attendance {
     @Column(name = "holiday_pay_rate")
     private Integer holidayPayRate = 0;
 
+    // 퇴근 미기록 알림을 보낸 시각(중복 알림 방지)
+    @Column(name = "missing_out_notified_at")
+    private LocalDateTime missingOutNotifiedAt;
+
     // [추가] 근태 수정 사유 (사장님이 수정/생성할 때 필수)
     @Column(name = "edit_reason", columnDefinition = "TEXT")
     private String editReason;

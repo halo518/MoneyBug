@@ -120,9 +120,9 @@ public class StateService {
 
         LocalDate today = TimeUtil.today();
         LocalDateTime now = LocalDateTime.now();
-        // FE 시드와 같은 범위: 지난달 1일이 든 주의 월요일 ~ 다음 달 말일
+        // FE 시드와 같은 범위: 지난달 1일이 든 주의 월요일 ~ 3개월 뒤 말일
         LocalDate from = today.minusMonths(1).withDayOfMonth(1).with(DayOfWeek.MONDAY);
-        LocalDate to = YearMonth.from(today).plusMonths(1).atEndOfMonth();
+        LocalDate to = YearMonth.from(today).plusMonths(3).atEndOfMonth();
 
         for (Store store : fullStores.values()) {
             boolean isOwner = store.getEmployer().getId().equals(userId);
