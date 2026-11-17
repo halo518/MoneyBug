@@ -34,7 +34,7 @@ class MonthScheduleSaveShiftsTest {
     MonthScheduleService service = new MonthScheduleService(mock(StoreAccess.class), monthRepo,
             mock(ScheduleTemplateRepository.class), scheduleRepo, attendanceRepo, workerRepo,
             mock(StorePartRepository.class), mock(OverlapChecker.class), deleter, mock(ShiftService.class),
-            mock(ScheduleAiService.class), mock(ScheduleJobStore.class), mock(StoreChangeHub.class),
+            mock(ScheduleAiService.class), mock(StaffWageService.class), mock(ScheduleJobStore.class), mock(StoreChangeHub.class),
             notifier, mock(PlatformTransactionManager.class));
 
     static Schedule shift(int id, StoreWorker sw, LocalDate d, int start, int end) {
