@@ -61,4 +61,4 @@ No DB in tests: plain JUnit + Mockito, or `@WebMvcTest` slices with `@MockitoBea
 
 ## Git
 
-Feature branch → PR to `main` → merge commit. Production follows the `deploy` branch (the deploy repo pins its commit): move `deploy` to the release commit, then bump the pointer in donBug_deploy.
+Feature branch → PR to `develop` → merge commit, then delete the feature branch. Release: PR `develop` → `main` → `deploy`. Only `develop`, `main`, `deploy` stay. donBug_deploy `develop` pins this repo's `develop` (test deploys), its `main` pins `deploy` (production); bump the pointer there after merging.

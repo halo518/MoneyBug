@@ -7,6 +7,7 @@ import com.example.moneybug.dto.ScheduleTemplateDto;
 import com.example.moneybug.dto.ShiftCommandDto;
 import com.example.moneybug.entity.Attendance;
 import com.example.moneybug.entity.MonthSchedule;
+import com.example.moneybug.entity.Notification;
 import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.entity.ScheduleTemplate;
 import com.example.moneybug.entity.Store;
@@ -42,6 +43,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
@@ -67,6 +69,7 @@ public class MonthScheduleService {
     private final ScheduleAiService ai;
     private final ScheduleJobStore jobs;
     private final StoreChangeHub changeHub;
+    private final NotificationPublisher notifier;
     private final TransactionTemplate tx;
     private final ExecutorService executor = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "schedule-ai");
@@ -80,7 +83,7 @@ public class MonthScheduleService {
                                 StorePartRepository partRepo, OverlapChecker overlapChecker,
                                 ScheduleDeleter deleter, ShiftService shiftService, ScheduleAiService ai,
                                 ScheduleJobStore jobs, StoreChangeHub changeHub,
-                                PlatformTransactionManager txManager) {
+                                NotificationPublisher notifier, PlatformTransactionManager txManager) {
         this.access = access;
         this.monthRepo = monthRepo;
         this.templateRepo = templateRepo;
@@ -94,6 +97,7 @@ public class MonthScheduleService {
         this.ai = ai;
         this.jobs = jobs;
         this.changeHub = changeHub;
+        this.notifier = notifier;
         this.tx = new TransactionTemplate(txManager);
     }
 
@@ -107,7 +111,7 @@ public class MonthScheduleService {
     public MonthScheduleDto.Response create(Integer userId, Integer storeId,
                                             MonthScheduleCommandDto.CreateRequest req) {
         Store store = access.requireOwner(userId, storeId);
-        YearMonth ym = parseMonth(req.month());
+        YearMonth ym = writableMonth(req.month());
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, req.month()).orElse(null);
         if (ms == null) {
             ms = newMeta(store, req.month());
@@ -124,6 +128,9 @@ public class MonthScheduleService {
 
     public void autofill(Integer userId, Integer storeId, String month) {
         Store store = access.requireOwner(userId, storeId);
+        if (isConfirmed(storeId, month)) {
+            throw ApiException.conflict("ALREADY_CONFIRMED", "확정된 근무표는 자동 채우기를 쓸 수 없어요");
+        }
         fill(store, parseMonth(month));
         monthRepo.findByStoreIdAndMonth(storeId, month).ifPresent(ms -> ms.setUpdatedAt(java.time.LocalDateTime.now()));
     }
@@ -143,7 +150,7 @@ public class MonthScheduleService {
 
     public MonthScheduleCommandDto.SaveShiftsResponse saveShifts(Integer userId, Integer storeId, String month,
                                                                  MonthScheduleCommandDto.SaveShiftsRequest req) {
-        access.requireOwner(userId, storeId);
+        Store store = access.requireOwner(userId, storeId);
         monthRepo.lockStore(storeId); // 같은 매장의 동시 저장·확정을 줄 세운다
         YearMonth ym = parseMonth(month);
         LocalDate first = ym.atDay(1);
@@ -161,10 +168,16 @@ public class MonthScheduleService {
                 : attendanceRepo.findByScheduleIdIn(mine.keySet()).stream()
                 .map(a -> a.getSchedule().getId()).collect(Collectors.toSet());
 
+        // 확정된 달은 바뀐 직원에게 알린다(직원은 이미 확정 근무표를 받았다).
+        boolean confirmed = isConfirmed(storeId, month);
+        Map<Integer, String> before = new HashMap<>();
+        if (confirmed) mine.values().forEach(s -> before.put(s.getId(), signature(s)));
+
         List<MonthScheduleCommandDto.Skipped> skipped = new ArrayList<>();
         List<Schedule> toDelete = new ArrayList<>();
         List<Schedule> toCreate = new ArrayList<>();
         Set<Integer> kept = new HashSet<>();
+        ChangedDays changed = new ChangedDays();
 
         for (MonthScheduleCommandDto.ShiftItem it : req.shifts()) {
             Integer id = numericId(it.id());
@@ -200,6 +213,8 @@ public class MonthScheduleService {
                 }
             }
             Schedule s = cur != null ? cur : new Schedule();
+            StoreWorker prevStaff = cur != null ? cur.getStoreWorker() : null;
+            LocalDate prevDate = cur != null ? cur.getWorkDate() : null;
             s.setStoreWorker(sw);
             s.setWorkDate(it.date());
             s.setStartMin(it.startMin());
@@ -210,6 +225,10 @@ public class MonthScheduleService {
             s.setKind(kind);
             s.setTimeTbd(Boolean.TRUE.equals(it.timeTbd()));
             if (cur == null) toCreate.add(s);
+            if (confirmed && (cur == null || !before.get(cur.getId()).equals(signature(s)))) {
+                if (prevStaff != null) changed.add(prevStaff, prevDate);
+                changed.add(sw, it.date());
+            }
         }
         for (Schedule s : mine.values()) {
             if (kept.contains(s.getId())) continue;
@@ -225,10 +244,40 @@ public class MonthScheduleService {
         finalState.addAll(toCreate);
         assertNoOverlap(finalState, first, last);
 
+        if (confirmed) toDelete.forEach(s -> changed.add(s.getStoreWorker(), s.getWorkDate()));
         toDelete.forEach(deleter::delete);
         scheduleRepo.saveAll(toCreate);
         monthRepo.findByStoreIdAndMonth(storeId, month).ifPresent(ms -> ms.setUpdatedAt(java.time.LocalDateTime.now()));
+        changed.notify(notifier, store, ym);
         return new MonthScheduleCommandDto.SaveShiftsResponse(skipped);
+    }
+
+    private boolean isConfirmed(Integer storeId, String month) {
+        return monthRepo.findByStoreIdAndMonth(storeId, month)
+                .filter(m -> m.getStatus() == MonthSchedule.Status.CONFIRMED).isPresent();
+    }
+
+    private static String signature(Schedule s) {
+        return s.getStoreWorker().getId() + "|" + s.getWorkDate() + "|" + s.getStartMin() + "|" + s.getEndMin()
+                + "|" + s.getPart() + "|" + s.getBreakMin() + "|" + s.getKind() + "|" + s.isTimeTbd();
+    }
+
+    /** 확정 달 저장에서 직원별로 바뀐 날짜. 직원마다 알림 한 건. */
+    static final class ChangedDays {
+        private final Map<Integer, StoreWorker> staff = new LinkedHashMap<>();
+        private final Map<Integer, TreeSet<LocalDate>> days = new HashMap<>();
+
+        void add(StoreWorker sw, LocalDate d) {
+            staff.putIfAbsent(sw.getId(), sw);
+            days.computeIfAbsent(sw.getId(), k -> new TreeSet<>()).add(d);
+        }
+
+        void notify(NotificationPublisher notifier, Store store, YearMonth ym) {
+            staff.forEach((id, sw) -> notifier.sendToStaff(store, sw, Notification.Type.SUB,
+                    ym.getMonthValue() + "월 확정 근무표가 바뀌었어요",
+                    days.get(id).stream().map(d -> d.getMonthValue() + "/" + d.getDayOfMonth())
+                            .collect(Collectors.joining(", ")), null));
+        }
     }
 
     /** 같은 직원의 실제 근무끼리 겹치면 400. */
@@ -304,7 +353,7 @@ public class MonthScheduleService {
     public void applyTemplate(Integer userId, Integer storeId, Integer templateId, String month) {
         Store store = access.requireOwner(userId, storeId);
         monthRepo.lockStore(storeId);
-        YearMonth ym = parseMonth(month);
+        YearMonth ym = writableMonth(month);
         ScheduleTemplate t = templateRepo.findByIdAndStoreId(templateId, storeId)
                 .orElseThrow(() -> ApiException.notFound("템플릿을 찾을 수 없어요"));
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, month).orElse(null);
@@ -345,7 +394,7 @@ public class MonthScheduleService {
     /** 작업을 만들어 백그라운드에서 돌리고 jobId 를 돌려준다. */
     public String generate(Integer userId, Integer storeId, MonthScheduleCommandDto.GenerateRequest req) {
         access.requireOwner(userId, storeId);
-        YearMonth ym = parseMonth(req.month());
+        YearMonth ym = writableMonth(req.month());
         if (targetDates(ym).isEmpty()) {
             throw ApiException.badRequest("PAST_MONTH", "지난 달은 새로 만들 수 없어요");
         }
@@ -486,6 +535,18 @@ public class MonthScheduleService {
         List<LocalDate> out = new ArrayList<>();
         for (LocalDate d = from; !d.isAfter(ym.atEndOfMonth()); d = d.plusDays(1)) out.add(d);
         return out;
+    }
+
+    /**
+     * 근무를 새로 만드는 달은 다음 달까지만. /me/state 가 다음 달 말까지만 내려주므로
+     * 그 뒤 달에 만들면 FE 에 안 보이고, 빈 편집기를 저장하면 전부 지워진다.
+     */
+    static YearMonth writableMonth(String month) {
+        YearMonth ym = parseMonth(month);
+        if (ym.isAfter(YearMonth.from(TimeUtil.today()).plusMonths(1))) {
+            throw ApiException.badRequest("MONTH_TOO_FAR", "근무표는 다음 달까지만 만들 수 있어요");
+        }
+        return ym;
     }
 
     private static YearMonth parseMonth(String month) {
