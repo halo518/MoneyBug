@@ -1,7 +1,9 @@
 package com.example.moneybug.service;
 
 import com.example.moneybug.entity.MonthSchedule.Priority;
+import com.example.moneybug.service.FixedShiftPlanner.Person;
 import com.example.moneybug.service.FixedShiftPlanner.Planned;
+import com.example.moneybug.service.FixedShiftPlanner.WorkHours;
 import com.example.moneybug.service.FixedShiftPlanner.StoreHours;
 import com.example.moneybug.service.GapFiller.PartNeed;
 import com.example.moneybug.service.GapFiller.Result;
@@ -24,7 +26,8 @@ class GapFillerTest {
 
     private static Result run(List<PartNeed> parts, List<Planned> existing, List<Integer> flex,
                               Map<Integer, Integer> wages, Set<String> off, List<LocalDate> dates, Priority pr) {
-        return GapFiller.fill(HOURS, parts, existing, flex, wages, off, dates, pr);
+        return GapFiller.fill(HOURS, parts, existing,
+                flex.stream().map(id -> new Person(id, false, null, null)).toList(), wages, off, dates, pr);
     }
 
     private static Result run(List<PartNeed> parts, List<Planned> existing, List<Integer> flex, List<LocalDate> dates) {
@@ -124,5 +127,64 @@ class GapFillerTest {
         assertEquals(1, r.shifts().size());
         assertEquals(780, r.shifts().get(0).startMin());
         assertEquals(1080, r.shifts().get(0).endMin());
+    }
+
+    @Test
+    void partTimerFillsOnlyInsideAvailHours() {
+        // 월: 09~13 가능 → 오전만, 화: 가능 시간 없음 → 못 채움.
+        List<WorkHours> avail = new java.util.ArrayList<>(java.util.Collections.nCopies(7, (WorkHours) null));
+        avail.set(0, new WorkHours(540, 780));
+        Person alba = new Person(5, true, null, null, avail);
+        Result r = GapFiller.fill(HOURS, List.of(AM, PM), List.of(), List.of(alba), Map.of(), Set.of(),
+                List.of(MON, MON.plusDays(1)), Priority.FAIRNESS);
+        assertEquals(1, r.shifts().size());
+        assertEquals(5, r.shifts().get(0).staffId());
+        assertEquals(MON, r.shifts().get(0).date());
+        assertEquals(780, r.shifts().get(0).endMin()); // 오후까지 넓히지 않는다
+        assertEquals(3, r.unfilled().size());
+    }
+
+    @Test
+    void partTimerWithoutAvailIsNotCandidate() {
+        Result r = GapFiller.fill(HOURS, List.of(AM), List.of(), List.of(new Person(5, true, null, null)),
+                Map.of(), Set.of(), List.of(MON), Priority.FAIRNESS);
+        assertTrue(r.shifts().isEmpty());
+    }
+
+    @Test
+    void neverSevenDaysInAWeek() {
+        // 짧은 파트(1시간)라 40시간 한도에 안 걸려도 7일째는 넣지 않는다.
+        PartNeed shortPart = new PartNeed("짧게", 540, 600, 1);
+        List<LocalDate> week = java.util.stream.IntStream.range(0, 7).mapToObj(MON::plusDays).toList();
+        Result r = run(List.of(shortPart), List.of(), List.of(1), week);
+        assertEquals(6, r.shifts().size());
+        assertEquals(MON.plusDays(6), r.unfilled().get(0).date());
+    }
+
+    @Test
+    void fixedDaysCountTowardWeeklyRest() {
+        // 고정 근무 6일(월~토)인 사람은 일요일 빈칸 후보가 아니다.
+        List<Planned> fixed = java.util.stream.IntStream.range(0, 6)
+                .mapToObj(i -> new Planned(1, MON.plusDays(i), 1080, 1140, "저녁", 0)).toList();
+        Result r = run(List.of(AM), fixed, List.of(1, 2), List.of(MON.plusDays(6)));
+        assertEquals(2, r.shifts().get(0).staffId());
+    }
+
+    private static Result runMinor(PartNeed part, List<Planned> existing) {
+        Person minor = new Person(5, true, null, null, java.util.Collections.nCopies(7, new WorkHours(0, 1440)), true);
+        return GapFiller.fill(new StoreHours(0, 1440, 0, 1440), List.of(part), existing, List.of(minor),
+                Map.of(), Set.of(), List.of(MON.plusDays(4)), Priority.FAIRNESS);
+    }
+
+    @Test
+    void minorLimits() {
+        assertEquals(1, runMinor(AM, List.of()).shifts().size());                                // 4시간 OK
+        assertTrue(runMinor(new PartNeed("길게", 540, 1080, 1), List.of()).shifts().isEmpty());     // 실근로 480 > 420
+        assertTrue(runMinor(new PartNeed("밤", 1200, 1380, 1), List.of()).shifts().isEmpty());     // 22시 넘김
+        assertTrue(runMinor(new PartNeed("새벽", 300, 540, 1), List.of()).shifts().isEmpty());     // 06시 전
+        // 월~목 4일 각 500분 = 2000 + 210 > 2100(성인 2400 이면 들어감)
+        List<Planned> week = java.util.stream.IntStream.range(0, 4)
+                .mapToObj(i -> new Planned(5, MON.plusDays(i), 540, 1070, "오전", 30)).toList();
+        assertTrue(runMinor(AM, week).shifts().isEmpty());
     }
 }

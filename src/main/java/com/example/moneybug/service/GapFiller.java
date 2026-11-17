@@ -1,6 +1,7 @@
 package com.example.moneybug.service;
 
 import com.example.moneybug.entity.MonthSchedule;
+import com.example.moneybug.service.FixedShiftPlanner.Person;
 import com.example.moneybug.service.FixedShiftPlanner.Planned;
 import com.example.moneybug.service.FixedShiftPlanner.StoreHours;
 
@@ -14,11 +15,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** 파트별 필요 인원 부족분을 고정 시간 없는 직원(flex)으로 메운다(DB 없는 순수 로직). */
+/**
+ * 파트별 필요 인원 부족분을 메운다(DB 없는 순수 로직). 후보 = 고정 시간 없는 직원(flex) + 그 시간이
+ * 추가 근무 가능 시간(availHours) 안인 알바생. 주 1회 휴일: 그 주에 이미 6일 일한 사람은 넣지 않는다.
+ */
 public final class GapFiller {
 
     private static final int WEEK_CAP_MIN = 2400;
     private static final int MERGE_CAP_MIN = 600;
+    private static final int WEEK_DAYS_CAP = 6;
+    private static final int MINOR_DAY_MIN = 420;
+    private static final int MINOR_WEEK_MIN = 2100;
 
     private GapFiller() {}
 
@@ -30,12 +37,12 @@ public final class GapFiller {
     public record Result(List<Planned> shifts, List<Gap> unfilled) {}
 
     public static Result fill(StoreHours hours, List<PartNeed> parts, List<Planned> existing,
-                              List<Integer> flexIds, Map<Integer, Integer> wages, Set<String> off,
+                              List<Person> people, Map<Integer, Integer> wages, Set<String> off,
                               List<LocalDate> dates, MonthSchedule.Priority priority) {
         List<Planned> all = new ArrayList<>(existing);
         List<Planned> created = new ArrayList<>();
         List<Gap> unfilled = new ArrayList<>();
-        List<Integer> flex = flexIds.stream().sorted().toList();
+        List<Person> flex = people.stream().sorted(Comparator.comparingInt(Person::id)).toList();
         List<PartNeed> byStart = parts.stream().sorted(Comparator.comparingInt(PartNeed::startMin)
                 .thenComparingInt(PartNeed::endMin).thenComparing(PartNeed::name)).toList();
 
@@ -81,7 +88,7 @@ public final class GapFiller {
     }
 
     /** [s,e] 근무를 맡을 직원을 골라 근무를 돌려준다. 없으면 null. */
-    private static Planned pick(List<Integer> flex, List<Planned> all, Map<Integer, Integer> wages, Set<String> off,
+    private static Planned pick(List<Person> flex, List<Planned> all, Map<Integer, Integer> wages, Set<String> off,
                                 LocalDate date, int s, int e, MonthSchedule.Priority priority) {
         int brk = FixedShiftPlanner.minBreakFor(e - s);
         int work = e - s - brk;
@@ -89,11 +96,18 @@ public final class GapFiller {
         YearMonth ym = YearMonth.from(date);
         int bestId = -1;
         long[] best = null;
-        for (int id : flex) {
-            if (off.contains(id + "|" + date)) continue;
+        for (Person person : flex) {
+            int id = person.id();
+            if (!person.availableFor(date, s, e) || off.contains(id + "|" + date)) continue;
+            // 연소자: 1일 7시간, 22:00~06:00 금지(s 는 0~1439, e 는 다음 날까지 갈 수 있음).
+            if (person.minor() && (work > MINOR_DAY_MIN || s < 360 || e > 1320)) continue;
             if (all.stream().anyMatch(x -> x.staffId() == id && x.date().equals(date))) continue;
+            long days = all.stream().filter(x -> x.staffId() == id
+                    && x.date().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).equals(monday))
+                    .map(Planned::date).distinct().count();
+            if (days >= WEEK_DAYS_CAP) continue;
             long week = sum(all, id, d -> d.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).equals(monday));
-            if (week + work > WEEK_CAP_MIN) continue;
+            if (week + work > (person.minor() ? MINOR_WEEK_MIN : WEEK_CAP_MIN)) continue;
             long month = sum(all, id, d -> YearMonth.from(d).equals(ym));
             long wage = priority == MonthSchedule.Priority.COST ? wages.getOrDefault(id, 0) : 0;
             long[] key = {wage, week, month, id};

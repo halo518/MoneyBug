@@ -20,7 +20,7 @@ class PrivacyStrippingTest {
         UserDto.Response p = UserDto.Response.builder().id(7).kakaoId("k").name("민수").email("a@b.c")
                 .contact("010").certHasPhoto(true).build();
         return new StaffDto(1, 1, 7, p, "오픈", null, 12000, StoreWorker.TaxType.NONE, true, true, null,
-                StoreWorker.Status.ACTIVE, null, null, null, List.of(), List.of(),
+                StoreWorker.Status.ACTIVE, null, null, null, List.of(), List.of(), List.of(),
                 List.of(new StaffDto.WageEntry(LocalDate.of(2026, 1, 1), 12000)), null);
     }
 

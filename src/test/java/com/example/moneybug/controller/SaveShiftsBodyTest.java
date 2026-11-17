@@ -7,7 +7,6 @@ import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.repository.StoreRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
 import com.example.moneybug.service.MonthScheduleService;
-import com.example.moneybug.service.ScheduleJobStore;
 import com.example.moneybug.service.StoreChangeHub;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -40,7 +39,6 @@ class SaveShiftsBodyTest {
     @Autowired MockMvc mvc;
     @Autowired JwtProvider jwt;
     @MockitoBean MonthScheduleService service;
-    @MockitoBean ScheduleJobStore jobs;
     @MockitoBean StoreRepository storeRepository;
     @MockitoBean StoreWorkerRepository storeWorkerRepository;
 

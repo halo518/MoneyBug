@@ -77,4 +77,46 @@ class FixedShiftPlannerTest {
         assertEquals("마감", out.stream().filter(p -> p.staffId() == 1).findFirst().orElseThrow().part());
         assertEquals(List.of(MON.plusDays(2)), out.stream().filter(p -> p.staffId() == 2).map(Planned::date).toList());
     }
+
+    @Test
+    void partTimerPartCutToStoreHours() {
+        // 주말 영업 09~21 (540~1260): 오픈 08~12 → 09~12(잘림, 휴게 0), 마감 17~22 → 17~21(잘림, 휴게 30).
+        // 평일은 그대로 파트 휴게 30.
+        Person p = new Person(1, true, week("오픈", "", "", "", "", "오픈,마감"), null);
+        List<Planned> out = FixedShiftPlanner.fixedShifts(HOURS, PARTS, List.of(p), days(7));
+        assertEquals(3, out.size());
+        assertEquals(480, out.get(0).startMin());
+        assertEquals(30, out.get(0).breakMin());
+        Planned open = out.get(1), close = out.get(2);
+        assertEquals(540, open.startMin());
+        assertEquals(720, open.endMin());
+        assertEquals(0, open.breakMin());
+        assertEquals(1020, close.startMin());
+        assertEquals(1260, close.endMin());
+        assertEquals(30, close.breakMin());
+    }
+
+    @Test
+    void partOutsideHoursDropped() {
+        StoreHours shortDay = new StoreHours(720, 1000, 720, 1000);
+        Person p = new Person(1, true, week("오픈,마감"), null);
+        assertTrue(FixedShiftPlanner.fixedShifts(shortDay, PARTS, List.of(p), days(1)).isEmpty());
+    }
+
+    @Test
+    void dawnPartUsesPreviousNightHours() {
+        // 평일 18:00~익일 06:00, 주말 18:00~익일 04:00. 새벽 파트 00~06 은 전날 영업의 이어지는 구간으로 자른다.
+        StoreHours night = new StoreHours(1080, 1800, 1080, 1680);
+        Person p = new Person(1, true, week("새벽", "새벽"), null);
+        List<Planned> out = FixedShiftPlanner.fixedShifts(night, List.of(new PartDef("새벽", 0, 360, 30)),
+                List.of(p), days(2));
+        assertEquals(2, out.size());
+        Planned mon = out.get(0), tue = out.get(1); // 월: 전날(일) 마감 04:00 까지로 잘림, 화: 전날(월) 06:00 까지 그대로
+        assertEquals(0, mon.startMin());
+        assertEquals(240, mon.endMin());
+        assertEquals(FixedShiftPlanner.minBreakFor(240), mon.breakMin());
+        assertEquals(0, tue.startMin());
+        assertEquals(360, tue.endMin());
+        assertEquals(30, tue.breakMin());
+    }
 }

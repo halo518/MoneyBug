@@ -27,5 +27,6 @@ public class StaffCommandDto {
             @Size(max = 50) String part,
             StoreWorker.Kind kind,
             List<List<String>> fixedParts,
-            List<StaffPrefs.WorkHours> workHours) {}
+            List<StaffPrefs.WorkHours> workHours,
+            List<StaffPrefs.WorkHours> availHours) {}
 }
