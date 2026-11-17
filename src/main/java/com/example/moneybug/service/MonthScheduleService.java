@@ -107,7 +107,7 @@ public class MonthScheduleService {
     public MonthScheduleDto.Response create(Integer userId, Integer storeId,
                                             MonthScheduleCommandDto.CreateRequest req) {
         Store store = access.requireOwner(userId, storeId);
-        YearMonth ym = parseMonth(req.month());
+        YearMonth ym = writableMonth(req.month());
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, req.month()).orElse(null);
         if (ms == null) {
             ms = newMeta(store, req.month());
@@ -304,7 +304,7 @@ public class MonthScheduleService {
     public void applyTemplate(Integer userId, Integer storeId, Integer templateId, String month) {
         Store store = access.requireOwner(userId, storeId);
         monthRepo.lockStore(storeId);
-        YearMonth ym = parseMonth(month);
+        YearMonth ym = writableMonth(month);
         ScheduleTemplate t = templateRepo.findByIdAndStoreId(templateId, storeId)
                 .orElseThrow(() -> ApiException.notFound("템플릿을 찾을 수 없어요"));
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, month).orElse(null);
@@ -345,7 +345,7 @@ public class MonthScheduleService {
     /** 작업을 만들어 백그라운드에서 돌리고 jobId 를 돌려준다. */
     public String generate(Integer userId, Integer storeId, MonthScheduleCommandDto.GenerateRequest req) {
         access.requireOwner(userId, storeId);
-        YearMonth ym = parseMonth(req.month());
+        YearMonth ym = writableMonth(req.month());
         if (targetDates(ym).isEmpty()) {
             throw ApiException.badRequest("PAST_MONTH", "지난 달은 새로 만들 수 없어요");
         }
@@ -486,6 +486,18 @@ public class MonthScheduleService {
         List<LocalDate> out = new ArrayList<>();
         for (LocalDate d = from; !d.isAfter(ym.atEndOfMonth()); d = d.plusDays(1)) out.add(d);
         return out;
+    }
+
+    /**
+     * 근무를 새로 만드는 달은 다음 달까지만. /me/state 가 다음 달 말까지만 내려주므로
+     * 그 뒤 달에 만들면 FE 에 안 보이고, 빈 편집기를 저장하면 전부 지워진다.
+     */
+    static YearMonth writableMonth(String month) {
+        YearMonth ym = parseMonth(month);
+        if (ym.isAfter(YearMonth.from(TimeUtil.today()).plusMonths(1))) {
+            throw ApiException.badRequest("MONTH_TOO_FAR", "근무표는 다음 달까지만 만들 수 있어요");
+        }
+        return ym;
     }
 
     private static YearMonth parseMonth(String month) {
