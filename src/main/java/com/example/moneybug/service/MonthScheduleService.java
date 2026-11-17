@@ -538,13 +538,13 @@ public class MonthScheduleService {
     }
 
     /**
-     * 근무를 새로 만드는 달은 다음 달까지만. /me/state 가 다음 달 말까지만 내려주므로
+     * 근무를 새로 만드는 달은 3개월 뒤까지만. /me/state 가 3개월 뒤 말까지만 내려주므로
      * 그 뒤 달에 만들면 FE 에 안 보이고, 빈 편집기를 저장하면 전부 지워진다.
      */
     static YearMonth writableMonth(String month) {
         YearMonth ym = parseMonth(month);
-        if (ym.isAfter(YearMonth.from(TimeUtil.today()).plusMonths(1))) {
-            throw ApiException.badRequest("MONTH_TOO_FAR", "근무표는 다음 달까지만 만들 수 있어요");
+        if (ym.isAfter(YearMonth.from(TimeUtil.today()).plusMonths(3))) {
+            throw ApiException.badRequest("MONTH_TOO_FAR", "근무표는 3개월 뒤까지만 만들 수 있어요");
         }
         return ym;
     }
