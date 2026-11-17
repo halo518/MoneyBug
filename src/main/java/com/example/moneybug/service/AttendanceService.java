@@ -34,6 +34,12 @@ public class AttendanceService {
 
     /** 근무 시작 이 시간(분) 전부터 출근할 수 있다. */
     private static final int CLOCK_IN_EARLY_MINUTES = 30;
+    /** 소정 종료 후 이 시간(시간)이 지나면 퇴근 기록 불가 — 사장님이 수정해야 한다. */
+    static final int CLOCK_OUT_GRACE_HOURS = 12;
+    /** 한 근태 기록의 최대 길이(시간). */
+    static final int MAX_WORK_HOURS = 24;
+    /** 서버·기기 시각 오차 허용(분). */
+    private static final int FUTURE_SLACK_MINUTES = 1;
 
     private final AttendanceRepository attendanceRepository;
     private final ScheduleRepository scheduleRepository;
@@ -67,7 +73,13 @@ public class AttendanceService {
         LocalDateTime now = TimeUtil.now();
         var existing = attendanceRepository.findByScheduleId(shift.getId());
         if (existing.isPresent()) {
+            if (existing.get().getActualEnd() != null) {
+                throw ApiException.conflict("ALREADY_CLOCKED_OUT", "이미 퇴근한 근무예요");
+            }
             return AttendanceCalc.view(existing.get(), now);
+        }
+        if (!attendanceRepository.findOpenByUser(userId).isEmpty()) {
+            throw ApiException.conflict("ALREADY_CLOCKED_IN", "퇴근하지 않은 근무가 있어요. 먼저 퇴근해 주세요");
         }
         if (now.isAfter(TimeUtil.end(shift))) {
             throw ApiException.conflict("SHIFT_ENDED", "근무 시간이 지나 출근할 수 없어요");
@@ -99,6 +111,10 @@ public class AttendanceService {
         Attendance a = attendanceRepository.findOpenByUserAndStore(userId, storeId).stream().findFirst()
                 .orElseThrow(() -> ApiException.notFound("퇴근할 출근 기록이 없어요"));
         LocalDateTime now = TimeUtil.now();
+        if (now.isAfter(TimeUtil.end(a.getSchedule()).plusHours(CLOCK_OUT_GRACE_HOURS))) {
+            throw ApiException.conflict("CLOCK_OUT_EXPIRED",
+                    "퇴근 가능 시간이 지났어요. 사장님께 근태 수정을 요청해 주세요");
+        }
         a.setActualEnd(now);
         a.setOvertimeMinutes(AttendanceCalc.overtimeMinutes(a.getSchedule(), a));
         return AttendanceCalc.view(a, now);
@@ -152,6 +168,7 @@ public class AttendanceService {
         LocalDateTime clockIn = request.clockIn() != null ? request.clockIn() : a.getActualStart();
         LocalDateTime clockOut = request.clockOut() != null ? request.clockOut() : a.getActualEnd();
         requireOrder(clockIn, clockOut);
+        requireNotFuture(clockIn, clockOut);
 
         a.setActualStart(clockIn);
         a.setActualEnd(clockOut);
@@ -180,6 +197,7 @@ public class AttendanceService {
             throw ApiException.conflict("ATTENDANCE_EXISTS", "이미 출근 기록이 있는 근무예요");
         }
         requireOrder(request.clockIn(), request.clockOut());
+        requireNotFuture(request.clockIn(), request.clockOut());
 
         Attendance a = new Attendance();
         a.setSchedule(shift);
@@ -233,6 +251,16 @@ public class AttendanceService {
     private static void requireOrder(LocalDateTime clockIn, LocalDateTime clockOut) {
         if (clockIn != null && clockOut != null && !clockOut.isAfter(clockIn)) {
             throw ApiException.badRequest("INVALID_CLOCK_RANGE", "퇴근 시각은 출근 시각보다 늦어야 해요");
+        }
+        if (clockIn != null && clockOut != null && clockOut.isAfter(clockIn.plusHours(MAX_WORK_HOURS))) {
+            throw ApiException.badRequest("INVALID_CLOCK_RANGE", "근무 시간이 24시간을 넘을 수 없어요");
+        }
+    }
+
+    private static void requireNotFuture(LocalDateTime clockIn, LocalDateTime clockOut) {
+        LocalDateTime limit = TimeUtil.now().plusMinutes(FUTURE_SLACK_MINUTES);
+        if ((clockIn != null && clockIn.isAfter(limit)) || (clockOut != null && clockOut.isAfter(limit))) {
+            throw ApiException.badRequest("FUTURE_TIME", "아직 오지 않은 시각은 입력할 수 없어요");
         }
     }
 }

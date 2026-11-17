@@ -29,10 +29,20 @@ public record StaffDto(
         List<List<String>> fixedParts,
         List<StaffPrefs.WorkHours> workHours) {
 
-    /** 다른 직원의 계약서를 숨길 때 (직원 화면용 /me/state). */
-    public StaffDto withoutContract() {
-        return new StaffDto(id, storeId, personId, person, part, kind, hourlyWage, taxType, weeklyHolidayAuto,
-                premium, tone, status, joinedAt, requestedAt, null, fixedParts, workHours);
+    /** 사장님·본인이 아닌 사람에게 줄 모습: 연락처·시급·공제·계약서를 뺀다 (FE 는 wage 0, deduction null 을 받는다). */
+    public StaffDto forViewer(boolean isOwner, Integer viewerUserId) {
+        if (isOwner || personId.equals(viewerUserId)) return this;
+        UserDto.Response p = person == null ? null : UserDto.Response.builder()
+                .id(person.getId())
+                .name(person.getName())
+                .fullName(person.getFullName())
+                .certExpiry(person.getCertExpiry())
+                .certAlertDays(person.getCertAlertDays())
+                .certHasPhoto(person.isCertHasPhoto())
+                .certDaysLeft(person.getCertDaysLeft())
+                .build();
+        return new StaffDto(id, storeId, personId, p, part, kind, 0, null, weeklyHolidayAuto,
+                false, tone, status, joinedAt, requestedAt, null, fixedParts, workHours);
     }
 
     public static StaffDto from(StoreWorker sw, ContractDto.Response contract) {

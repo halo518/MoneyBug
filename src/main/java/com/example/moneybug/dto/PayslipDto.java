@@ -27,6 +27,8 @@ public class PayslipDto {
             int net,
             /** true 면 오늘 이후 예정 근무까지 포함한 '예상 급여' */
             boolean projected,
+            /** 이 달 지난 근무 중 출근만 있고 퇴근 기록이 없어 0원으로 빠진 건수 */
+            int missingClockOut,
             List<Entry> entries) {}
 
     public record Entry(

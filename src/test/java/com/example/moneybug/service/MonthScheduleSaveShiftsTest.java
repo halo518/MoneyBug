@@ -105,4 +105,49 @@ class MonthScheduleSaveShiftsTest {
                         item(null, 46, LocalDate.of(2026, 11, 5), 540, 1080)))))
                 .isInstanceOf(ApiException.class).hasMessageContaining("재직");
     }
+
+    @Test
+    void rejectsBadBreakAndOver24h() {
+        StoreWorker sw = new StoreWorker();
+        sw.setId(45);
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(sw));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of());
+        LocalDate d = LocalDate.of(2026, 12, 4);
+        var neg = new ShiftItem(null, 45, d, 540, 1080, "오픈", -30, Schedule.Kind.WORK, false);
+        var big = new ShiftItem(null, 45, d, 600, 2800, "오픈", 30, Schedule.Kind.WORK, false);
+        for (var it : List.of(neg, big)) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.saveShifts(7, 1, "2026-12",
+                    new MonthScheduleCommandDto.SaveShiftsRequest(List.of(it)))).isInstanceOf(ApiException.class);
+        }
+    }
+
+    @Test
+    void attendanceShiftKindChangeIsSkipped() {
+        StoreWorker sw = new StoreWorker();
+        sw.setId(45);
+        LocalDate d = LocalDate.of(2026, 12, 3);
+        Schedule cur = shift(123, sw, d, 540, 1080);
+        var att = new com.example.moneybug.entity.Attendance();
+        att.setSchedule(cur);
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(sw));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of(cur));
+        when(attendanceRepo.findByScheduleIdIn(anyCollection())).thenReturn(List.of(att));
+
+        var res = service.saveShifts(7, 1, "2026-12", new MonthScheduleCommandDto.SaveShiftsRequest(List.of(
+                new ShiftItem("123", 45, d, 540, 1080, "오픈", 30, Schedule.Kind.OFF, false))));
+
+        assertThat(res.skipped()).hasSize(1);
+        assertThat(cur.getKind()).isEqualTo(Schedule.Kind.WORK);
+    }
+
+    @Test
+    void jobStoreAllowsOneRunningPerStore() {
+        var store = new ScheduleJobStore();
+        String id = store.createIfNoneRunning(1);
+        assertThat(id).isNotNull();
+        assertThat(store.createIfNoneRunning(1)).isNull();
+        assertThat(store.createIfNoneRunning(2)).isNotNull();
+        store.fail(id, "x");
+        assertThat(store.createIfNoneRunning(1)).isNotNull();
+    }
 }

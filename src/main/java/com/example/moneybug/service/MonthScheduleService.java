@@ -144,6 +144,7 @@ public class MonthScheduleService {
     public MonthScheduleCommandDto.SaveShiftsResponse saveShifts(Integer userId, Integer storeId, String month,
                                                                  MonthScheduleCommandDto.SaveShiftsRequest req) {
         access.requireOwner(userId, storeId);
+        monthRepo.lockStore(storeId); // 같은 매장의 동시 저장·확정을 줄 세운다
         YearMonth ym = parseMonth(month);
         LocalDate first = ym.atDay(1);
         LocalDate last = ym.atEndOfMonth();
@@ -178,10 +179,23 @@ public class MonthScheduleService {
             if (it.startMin() < 0 || it.startMin() > 1439 || it.endMin() < 0 || it.endMin() > 2880) {
                 throw ApiException.badRequest("INVALID_TIME", "근무 시각이 올바르지 않아요");
             }
+            Schedule.Kind kind = it.kind() != null ? it.kind() : Schedule.Kind.WORK;
+            int length = (it.endMin() <= it.startMin() ? it.endMin() + 1440 : it.endMin()) - it.startMin();
+            if (kind == Schedule.Kind.WORK && !Boolean.TRUE.equals(it.timeTbd())) {
+                if (length > 1440) throw ApiException.badRequest("INVALID_TIME", "근무는 24시간을 넘길 수 없어요");
+                if (it.breakMin() != null && (it.breakMin() < 0 || it.breakMin() > length)) {
+                    throw ApiException.badRequest("INVALID_BREAK", "휴게 시간이 올바르지 않아요");
+                }
+            }
             if (cur != null) kept.add(cur.getId());
             if (cur != null && withAttendance.contains(cur.getId())) {
                 if (!cur.getWorkDate().equals(it.date()) || !cur.getStoreWorker().getId().equals(sw.getId())) {
                     skipped.add(new MonthScheduleCommandDto.Skipped(cur.getId(), "출근 기록이 있어 날짜·사람을 바꾸지 않았어요"));
+                    continue;
+                }
+                // 근태·급여는 실제 근무(WORK, 시간 확정)만 센다.
+                if (kind != Schedule.Kind.WORK || Boolean.TRUE.equals(it.timeTbd())) {
+                    skipped.add(new MonthScheduleCommandDto.Skipped(cur.getId(), "출근 기록이 있어 종류를 바꾸지 않았어요"));
                     continue;
                 }
             }
@@ -193,7 +207,7 @@ public class MonthScheduleService {
             s.setPart(it.part());
             s.setBreakMin(it.breakMin() != null ? it.breakMin()
                     : ScheduleDto.defaultBreakMin(it.startMin(), it.endMin()));
-            s.setKind(it.kind() != null ? it.kind() : Schedule.Kind.WORK);
+            s.setKind(kind);
             s.setTimeTbd(Boolean.TRUE.equals(it.timeTbd()));
             if (cur == null) toCreate.add(s);
         }
@@ -209,7 +223,7 @@ public class MonthScheduleService {
         List<Schedule> finalState = new ArrayList<>();
         around.stream().filter(s -> !toDelete.contains(s)).forEach(finalState::add);
         finalState.addAll(toCreate);
-        assertNoOverlap(finalState);
+        assertNoOverlap(finalState, first, last);
 
         toDelete.forEach(deleter::delete);
         scheduleRepo.saveAll(toCreate);
@@ -218,14 +232,17 @@ public class MonthScheduleService {
     }
 
     /** 같은 직원의 실제 근무끼리 겹치면 400. */
-    static void assertNoOverlap(List<Schedule> shifts) {
+    static void assertNoOverlap(List<Schedule> shifts, LocalDate first, LocalDate last) {
         Map<Integer, List<Schedule>> byStaff = shifts.stream().filter(Schedule::isWork)
                 .collect(Collectors.groupingBy(s -> s.getStoreWorker().getId()));
         for (List<Schedule> list : byStaff.values()) {
             list.sort(Comparator.comparing(Schedule::getWorkDate).thenComparing(Schedule::getStartMin));
             for (int i = 0; i + 1 < list.size(); i++) {
                 for (int j = i + 1; j < list.size(); j++) {
-                    if (TimeUtil.overlaps(list.get(i), list.get(j))) {
+                    // 둘 다 이웃 달 근무면 이번 달 저장과 무관하다.
+                    boolean aIn = !list.get(i).getWorkDate().isBefore(first) && !list.get(i).getWorkDate().isAfter(last);
+                    boolean bIn = !list.get(j).getWorkDate().isBefore(first) && !list.get(j).getWorkDate().isAfter(last);
+                    if ((aIn || bIn) && TimeUtil.overlaps(list.get(i), list.get(j))) {
                         throw ApiException.badRequest("SHIFT_OVERLAP",
                                 list.get(i).getStoreWorker().getWorker().getName()
                                         + "님의 근무 시간이 겹쳐요 (" + TimeUtil.label(list.get(j)) + ")");
@@ -240,8 +257,10 @@ public class MonthScheduleService {
     public void confirm(Integer userId, Integer storeId, String month) {
         access.requireOwner(userId, storeId);
         YearMonth ym = parseMonth(month);
+        monthRepo.lockStore(storeId);
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, month)
                 .orElseThrow(() -> ApiException.notFound("근무표를 찾을 수 없어요"));
+        if (ms.getStatus() == MonthSchedule.Status.CONFIRMED) return; // 멱등: 알림을 또 보내지 않는다
         if (scheduleRepo.countTbd(storeId, ym.atDay(1), ym.atEndOfMonth()) > 0) {
             throw ApiException.conflict("TBD_REMAINING", "시간 미정을 먼저 해결하세요");
         }
@@ -284,6 +303,7 @@ public class MonthScheduleService {
     /** 요일별로 대상 날짜를 채운다. 오늘 이후·출근 기록 없는 기존 근무는 교체. */
     public void applyTemplate(Integer userId, Integer storeId, Integer templateId, String month) {
         Store store = access.requireOwner(userId, storeId);
+        monthRepo.lockStore(storeId);
         YearMonth ym = parseMonth(month);
         ScheduleTemplate t = templateRepo.findByIdAndStoreId(templateId, storeId)
                 .orElseThrow(() -> ApiException.notFound("템플릿을 찾을 수 없어요"));
@@ -293,7 +313,11 @@ public class MonthScheduleService {
         }
         List<LocalDate> dates = targetDates(ym);
         if (!dates.isEmpty()) {
-            removeShifts(scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth()));
+            // WORK 만 교체한다. 연차·휴무는 두고, 그 날의 템플릿 행은 건너뛴다.
+            List<Schedule> inRange = scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth());
+            removeShifts(inRange.stream().filter(s -> s.getKind() == Schedule.Kind.WORK).toList());
+            Set<String> off = inRange.stream().filter(s -> s.getKind() != Schedule.Kind.WORK)
+                    .map(s -> s.getStoreWorker().getId() + "|" + s.getWorkDate()).collect(Collectors.toSet());
             Map<Integer, StoreWorker> workers = activeWorkers(storeId);
             List<Schedule> rows = new ArrayList<>();
             for (ScheduleTemplateDto.Shift p : ScheduleTemplateDto.parse(t.getPatternJson())) {
@@ -301,6 +325,7 @@ public class MonthScheduleService {
                 if (sw == null) continue;
                 boolean once = p.kind() == Schedule.Kind.LEAVE;
                 for (LocalDate d : TemplatePattern.datesFor(p.dayIndex(), once, dates)) {
+                    if (off.contains(sw.getId() + "|" + d)) continue;
                     rows.add(row(sw, d, p.startMin(), p.endMin(), p.part(), p.breakMin(),
                             p.kind() == null ? Schedule.Kind.WORK : p.kind(), p.timeTbd()));
                 }
@@ -328,13 +353,13 @@ public class MonthScheduleService {
                 .filter(m -> m.getStatus() == MonthSchedule.Status.CONFIRMED).isPresent()) {
             throw ApiException.conflict("ALREADY_CONFIRMED", "이미 확정된 근무표예요");
         }
-        if (jobs.hasRunning(storeId)) {
-            throw ApiException.conflict("JOB_RUNNING", "이미 근무표를 만들고 있어요. 끝날 때까지 기다려 주세요");
-        }
         MonthSchedule.HolidayPolicy policy = req.weeklyHolidayPay() != null
                 ? req.weeklyHolidayPay() : MonthSchedule.HolidayPolicy.MINIMIZE;
         MonthSchedule.Priority priority = req.priority() != null ? req.priority() : MonthSchedule.Priority.FAIRNESS;
-        String jobId = jobs.create(storeId);
+        String jobId = jobs.createIfNoneRunning(storeId);
+        if (jobId == null) {
+            throw ApiException.conflict("JOB_RUNNING", "이미 근무표를 만들고 있어요. 끝날 때까지 기다려 주세요");
+        }
         executor.submit(() -> runGenerate(jobId, storeId, ym, policy, priority));
         return jobId;
     }
@@ -376,7 +401,7 @@ public class MonthScheduleService {
             changeHub.bump(storeId); // 백그라운드 생성은 요청이 끝난 뒤라 인터셉터가 못 잡는다
         } catch (ApiException e) {
             jobs.fail(jobId, e.getMessage());
-        } catch (Exception e) {
+        } catch (Throwable e) { // Error 도 잡아야 job 이 영영 running 으로 남지 않는다
             // 프롬프트·키가 로그에 남지 않게 예외 종류만 기록한다.
             log.warn("근무표 생성 실패: {}", e.getClass().getSimpleName());
             jobs.fail(jobId, "근무표를 만드는 중 오류가 났어요");
@@ -399,6 +424,12 @@ public class MonthScheduleService {
     private void applyGenerated(Integer storeId, YearMonth ym, List<Planned> planned, String comment,
                                 MonthSchedule.HolidayPolicy policy, MonthSchedule.Priority priority) {
         Store store = access.store(storeId);
+        monthRepo.lockStore(storeId);
+        // 생성하는 동안 확정됐으면 덮어쓰지 않는다.
+        if (monthRepo.findByStoreIdAndMonth(storeId, ym.toString())
+                .filter(m -> m.getStatus() == MonthSchedule.Status.CONFIRMED).isPresent()) {
+            throw ApiException.conflict("ALREADY_CONFIRMED", "그 사이 확정돼서 반영하지 않았어요");
+        }
         LocalDate from = targetDates(ym).get(0);
         // WORK 는 지우고(출근 기록 있는 것 제외) 연차·휴무는 그대로 둔다.
         removeShifts(scheduleRepo.findByStoreBetween(storeId, from, ym.atEndOfMonth()).stream()

@@ -26,7 +26,9 @@ public class ScheduleJobStore {
 
     private final Map<String, Job> jobs = new ConcurrentHashMap<>();
 
-    public String create(Integer storeId) {
+    /** 그 매장에 실행 중인 작업이 없을 때만 만든다. 있으면 null. */
+    public synchronized String createIfNoneRunning(Integer storeId) {
+        if (hasRunning(storeId)) return null;
         long now = System.currentTimeMillis();
         jobs.values().removeIf(j -> j.finishedAt > 0 && now - j.finishedAt > KEEP_MS);
         String id = UUID.randomUUID().toString();

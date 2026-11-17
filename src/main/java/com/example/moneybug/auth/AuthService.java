@@ -51,7 +51,7 @@ public class AuthService {
     public AuthService(KakaoClient kakaoClient, UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository, JwtProvider jwtProvider,
                        @Value("${jwt.refresh-ttl-seconds}") long refreshTtlSeconds,
-                       @Value("${auth.dev-login.enabled:true}") boolean devLoginEnabled,
+                       @Value("${auth.dev-login.enabled:false}") boolean devLoginEnabled,
                        @Value("${auth.test-login.token:}") String testLoginToken) {
         this.kakaoClient = kakaoClient;
         this.userRepository = userRepository;
@@ -71,7 +71,7 @@ public class AuthService {
     @Transactional
     public Tokens loginWithKakaoAccessToken(String kakaoAccessToken) {
         // 개발용 우회: 토큰이 "test_token" 과 정확히 일치하면 카카오 검증 없이 테스트 사용자로 로그인한다.
-        // 기본은 켜짐이며, 운영에서는 DEV_LOGIN_ENABLED=false 로 반드시 꺼야 한다.
+        // 기본은 꺼짐. 로컬에서만 DEV_LOGIN_ENABLED=true 로 켠다.
         if (devLoginEnabled && DEV_TOKEN.equals(kakaoAccessToken)) {
             return login(new KakaoUser(DEV_KAKAO_ID, DEV_NAME, DEV_EMAIL, null));
         }

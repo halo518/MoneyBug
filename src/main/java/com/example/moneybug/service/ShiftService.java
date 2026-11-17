@@ -9,7 +9,10 @@ import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StorePart;
 import com.example.moneybug.entity.StoreWorker;
+import com.example.moneybug.entity.SubstituteRequest;
 import com.example.moneybug.repository.AttendanceRepository;
+import com.example.moneybug.repository.MonthScheduleRepository;
+import com.example.moneybug.repository.SubstituteRequestRepository;
 import com.example.moneybug.repository.ScheduleRepository;
 import com.example.moneybug.repository.StorePartRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
@@ -52,6 +55,8 @@ public class ShiftService {
     private final ScheduleDeleter scheduleDeleter;
     private final SchedulePlanStore planStore;
     private final StoreService storeService;
+    private final SubstituteRequestRepository substituteRequestRepository;
+    private final MonthScheduleRepository monthScheduleRepository;
 
     // ---------------------------------------------------------------- 조회
 
@@ -141,6 +146,9 @@ public class ShiftService {
                                        ShiftCommandDto.UpdateRequest request) {
         Store store = access.requireOwner(userId, storeId);
         Schedule s = findShift(storeId, shiftId);
+        if (attendanceRepository.existsByScheduleId(s.getId())) {
+            throw ApiException.conflict("ATTENDANCE_EXISTS", "출근 기록이 있는 근무는 수정할 수 없어요");
+        }
 
         StoreWorker oldStaff = s.getStoreWorker();
         boolean wasWork = s.isWork();
@@ -177,6 +185,12 @@ public class ShiftService {
         if (request.breakMin() != null) s.setBreakMin(request.breakMin());
 
         boolean isWork = s.isWork();
+        // 담당자·날짜·시간·종류가 바뀌면 진행 중 대타 요청은 더 이상 맞지 않는다.
+        if (!newStaff.getId().equals(oldStaff.getId()) || !oldLabel.equals(TimeUtil.label(s)) || wasWork != isWork) {
+            for (SubstituteRequest r : substituteRequestRepository.findByScheduleId(s.getId())) {
+                if (r.isPending()) r.setStatus(SubstituteRequest.Status.CANCELLED);
+            }
+        }
         boolean staffChanged = !newStaff.getId().equals(oldStaff.getId());
         String newLabel = TimeUtil.label(s);
 
@@ -366,14 +380,15 @@ public class ShiftService {
         List<Schedule> all = new ArrayList<>(scheduleRepository.findByStoreBetween(storeId,
                 thisMonday.minusDays(7), thisMonday.plusDays(7)));
         List<Schedule> lastWeek = all.stream()
-                .filter(s -> s.getWorkDate().isBefore(thisMonday) && s.isWork() && !s.isSubstitute())
+                .filter(s -> s.getWorkDate().isBefore(thisMonday) && s.isWork())
                 .toList();
 
         int copied = 0;
         for (Schedule src : lastWeek) {
-            StoreWorker sw = active.get(src.getStoreWorker().getId());
+            StoreWorker sw = active.get(regularStaffId(src));
             if (sw == null) continue;
             LocalDate target = src.getWorkDate().plusDays(7);
+            if (target.isBefore(TimeUtil.today())) continue; // 이미 지난 날은 만들지 않는다
             boolean duplicate = all.stream().anyMatch(s -> s.isWork()
                     && s.getWorkDate().equals(target)
                     && s.getStoreWorker().getId().equals(sw.getId())
@@ -405,6 +420,12 @@ public class ShiftService {
         long tbd = countTbd(storeId, request.year(), request.month());
         if (tbd > 0) {
             throw ApiException.conflict("TBD_REMAINING", "시간 미정 " + tbd + "건을 먼저 정해 주세요");
+        }
+        // 이미 확정된 달이면 알림을 또 보내지 않는다 (월 메타가 있는 경우만 알 수 있다).
+        var meta = monthScheduleRepository.findByStoreIdAndMonth(storeId,
+                String.format("%04d-%02d", request.year(), request.month()));
+        if (meta.isPresent() && meta.get().getStatus() == com.example.moneybug.entity.MonthSchedule.Status.CONFIRMED) {
+            return;
         }
         store.setScheduleConfirmedAt(TimeUtil.now());
         notifier.sendToActiveStaff(store, null, Notification.Type.SUB,
@@ -458,6 +479,12 @@ public class ShiftService {
                 && TimeUtil.overlaps(s, probe));
     }
 
+    /** 복사할 담당자: 대타로 바뀐 근무는 원래 정규 근무자(재직 중이면)의 것으로 본다. */
+    private static Integer regularStaffId(Schedule src) {
+        return src.isSubstitute() && src.getOriginalStoreWorker() != null
+                ? src.getOriginalStoreWorker().getId() : src.getStoreWorker().getId();
+    }
+
     private record Fill(List<Schedule> added, int unfilled) {}
 
     /** 지난주(d-7) 실제 근무를 같은 직원·같은 시간으로 d 에 복사. 날짜 오름차순이라 앞 주 복사본이 다음 주 원본이 된다. */
@@ -468,10 +495,10 @@ public class ShiftService {
         List<Schedule> added = new ArrayList<>();
         for (LocalDate d : dates) {
             List<Schedule> sources = all.stream()
-                    .filter(s -> s.getWorkDate().equals(d.minusDays(7)) && s.isWork() && !s.isSubstitute())
+                    .filter(s -> s.getWorkDate().equals(d.minusDays(7)) && s.isWork())
                     .toList();
             for (Schedule src : sources) {
-                StoreWorker sw = active.get(src.getStoreWorker().getId());
+                StoreWorker sw = active.get(regularStaffId(src));
                 if (sw == null || excluded.contains(sw.getId())) continue;
                 Schedule copy = new Schedule();
                 copy.setStoreWorker(sw);

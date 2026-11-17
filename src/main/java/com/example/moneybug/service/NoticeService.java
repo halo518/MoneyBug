@@ -29,6 +29,9 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class NoticeService {
 
+    private static final int CONTENT_MAX = 5000;
+    private static final java.time.Duration REMIND_COOLDOWN = java.time.Duration.ofHours(1);
+
     private final NoticeRepository noticeRepository;
     private final NoticeReadRepository noticeReadRepository;
     private final StoreWorkerRepository storeWorkerRepository;
@@ -41,8 +44,9 @@ public class NoticeService {
     public NoticeViewDto.ListResponse list(Integer userId, Integer storeId) {
         Store store = access.requireOwnerOrStaff(userId, storeId);
         boolean owner = access.isOwner(store, userId);
-        Integer myStaffId = owner ? null : access.activeStaff(userId, storeId).map(StoreWorker::getId).orElse(null);
-        Set<Integer> activeIds = activeStaffIds(storeId);
+        StoreWorker meSw = owner ? null : access.activeStaff(userId, storeId).orElse(null);
+        Integer myStaffId = meSw == null ? null : meSw.getId();
+        Map<Integer, StoreWorker> active = activeStaff(storeId);
 
         Map<Integer, Map<Integer, LocalDateTime>> readsByNotice = new HashMap<>();
         for (NoticeRead nr : noticeReadRepository.findByNoticeStoreId(storeId)) {
@@ -53,7 +57,7 @@ public class NoticeService {
         List<NoticeViewDto.View> items = new ArrayList<>();
         int unread = 0;
         for (Notice n : noticeRepository.findByStoreIdOrderByPinnedDescCreatedAtDescIdDesc(storeId)) {
-            NoticeViewDto.View v = view(n, readsByNotice.getOrDefault(n.getId(), Map.of()), owner, myStaffId, activeIds);
+            NoticeViewDto.View v = view(n, readsByNotice.getOrDefault(n.getId(), Map.of()), owner, myStaffId, active);
             if (!owner && !v.isRead()) unread++;
             items.add(v);
         }
@@ -68,7 +72,7 @@ public class NoticeService {
         Notice n = find(storeId, noticeId);
         Map<Integer, LocalDateTime> reads = noticeReadRepository.findByNoticeId(n.getId()).stream()
                 .collect(Collectors.toMap(r -> r.getStoreWorker().getId(), NoticeRead::getReadAt, (a, b) -> a));
-        return view(n, reads, owner, myStaffId, activeStaffIds(storeId));
+        return view(n, reads, owner, myStaffId, activeStaff(storeId));
     }
 
     /**
@@ -81,23 +85,25 @@ public class NoticeService {
                 || request.getContent() == null || request.getContent().isBlank()) {
             throw ApiException.badRequest("NOTICE_REQUIRED_FIELDS", "제목과 내용을 입력해 주세요");
         }
+        if (request.getContent().trim().length() > CONTENT_MAX) {
+            throw ApiException.badRequest("NOTICE_TOO_LONG", "공지 내용은 " + CONTENT_MAX + "자까지 쓸 수 있어요");
+        }
         Notice notice = request.toEntity(store);
+        if (notice.getCategory() == null) notice.setCategory(Notice.Category.GENERAL);
         notice.setTitle(request.getTitle().trim());
         notice.setContent(request.getContent().trim());
         noticeRepository.save(notice);
 
         notifier.sendToActiveStaff(store, null, Notification.Type.NOTICE,
                 notice.isRequired() ? "새 필독 공지" : "새 공지", notice.getTitle(), notice.getId());
-        return view(notice, Map.of(), true, null, activeStaffIds(storeId));
+        return view(notice, Map.of(), true, null, activeStaff(storeId));
     }
 
     /** POST /notices/{id}/read — 직원. 이미 읽었으면 변경 없음(멱등). */
     public void markRead(Integer userId, Integer storeId, Integer noticeId) {
         StoreWorker me = access.requireActiveStaff(userId, storeId);
         Notice n = find(storeId, noticeId);
-        if (!noticeReadRepository.existsByNoticeIdAndStoreWorkerId(n.getId(), me.getId())) {
-            saveRead(n, me);
-        }
+        saveRead(n, me);
     }
 
     /** POST /notices/read-all — 직원. 안 읽은 공지를 모두 읽음 처리. */
@@ -120,16 +126,22 @@ public class NoticeService {
         Set<Integer> readIds = reads.stream().map(r -> r.getStoreWorker().getId()).collect(Collectors.toSet());
         return new NoticeViewDto.ReadStatusResponse(
                 reads.stream().map(r -> new NoticeViewDto.ReadEntry(r.getStoreWorker().getId(), r.getReadAt())).toList(),
-                unreadStaff(storeId, readIds).stream().map(staffAssembler::toDto).toList());
+                unreadStaff(n, storeId, readIds).stream().map(staffAssembler::toDto).toList());
     }
 
     /** POST /notices/{id}/remind — 사장님. 안 읽은 직원에게 NOTICE "필독 공지를 확인해 주세요", remindedAt=now. */
     public NoticeViewDto.RemindResponse remind(Integer userId, Integer storeId, Integer noticeId) {
         Store store = access.requireOwner(userId, storeId);
         Notice n = find(storeId, noticeId);
+        if (!n.isRequired()) {
+            throw ApiException.conflict("NOT_REQUIRED", "필독 공지만 다시 알릴 수 있어요");
+        }
+        if (n.getRemindedAt() != null && n.getRemindedAt().plus(REMIND_COOLDOWN).isAfter(TimeUtil.now())) {
+            throw ApiException.conflict("REMIND_TOO_SOON", "방금 알렸어요. 1시간 뒤에 다시 알릴 수 있어요");
+        }
         Set<Integer> readIds = noticeReadRepository.findByNoticeId(n.getId()).stream()
                 .map(r -> r.getStoreWorker().getId()).collect(Collectors.toSet());
-        List<StoreWorker> targets = unreadStaff(storeId, readIds);
+        List<StoreWorker> targets = unreadStaff(n, storeId, readIds);
         for (StoreWorker sw : targets) {
             notifier.sendToStaff(store, sw, Notification.Type.NOTICE, "필독 공지를 확인해 주세요", n.getTitle(), n.getId());
         }
@@ -140,15 +152,19 @@ public class NoticeService {
     // ------------------------------------------------------------------ 내부
 
     private NoticeViewDto.View view(Notice n, Map<Integer, LocalDateTime> readBy, boolean owner, Integer myStaffId,
-                                    Set<Integer> activeIds) {
+                                    Map<Integer, StoreWorker> active) {
         if (owner) {
-            int unreadCount = (int) activeIds.stream().filter(id -> !readBy.containsKey(id)).count();
+            int unreadCount = (int) active.values().stream()
+                    .filter(sw -> !readBy.containsKey(sw.getId()) && !beforeJoin(n, sw)).count();
             return NoticeViewDto.View.from(n, readBy, true, unreadCount);
         }
         // FE 계약: readBy 는 항상 맵. 직원에게는 본인 읽음 기록만 준다(다른 직원 읽음 여부는 숨김).
         Map<Integer, LocalDateTime> mine = myStaffId != null && readBy.containsKey(myStaffId)
                 ? Map.of(myStaffId, readBy.get(myStaffId)) : Map.of();
-        return NoticeViewDto.View.from(n, mine, !mine.isEmpty(), null);
+        // 가입 전에 올라온 공지는 읽은 것으로 본다(미확인 배지·현황에 안 잡힘).
+        boolean read = !mine.isEmpty() || (myStaffId != null && active.containsKey(myStaffId)
+                && beforeJoin(n, active.get(myStaffId)));
+        return NoticeViewDto.View.from(n, mine, read, null);
     }
 
     private Notice find(Integer storeId, Integer noticeId) {
@@ -157,20 +173,22 @@ public class NoticeService {
     }
 
     private void saveRead(Notice n, StoreWorker sw) {
-        NoticeRead read = new NoticeRead();
-        read.setNotice(n);
-        read.setStoreWorker(sw);
-        read.setReadAt(TimeUtil.now());
-        noticeReadRepository.save(read);
+        noticeReadRepository.insertIgnore(n.getId(), sw.getId(), TimeUtil.now());
     }
 
-    private Set<Integer> activeStaffIds(Integer storeId) {
-        return storeWorkerRepository.findByStoreIdAndStatus(storeId, StoreWorker.Status.ACTIVE).stream()
-                .map(StoreWorker::getId).collect(Collectors.toSet());
+    /** 직원이 가입(승인)한 날보다 먼저 올라온 공지인가. */
+    private static boolean beforeJoin(Notice n, StoreWorker sw) {
+        return sw.getJoinedAt() != null && n.getCreatedAt() != null
+                && n.getCreatedAt().toLocalDate().isBefore(sw.getJoinedAt());
     }
 
-    private List<StoreWorker> unreadStaff(Integer storeId, Set<Integer> readIds) {
+    private Map<Integer, StoreWorker> activeStaff(Integer storeId) {
         return storeWorkerRepository.findByStoreIdAndStatus(storeId, StoreWorker.Status.ACTIVE).stream()
-                .filter(sw -> !readIds.contains(sw.getId())).toList();
+                .collect(Collectors.toMap(StoreWorker::getId, sw -> sw, (a, b) -> a));
+    }
+
+    private List<StoreWorker> unreadStaff(Notice n, Integer storeId, Set<Integer> readIds) {
+        return activeStaff(storeId).values().stream()
+                .filter(sw -> !readIds.contains(sw.getId()) && !beforeJoin(n, sw)).toList();
     }
 }

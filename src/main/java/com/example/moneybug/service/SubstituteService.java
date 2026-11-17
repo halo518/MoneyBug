@@ -10,6 +10,7 @@ import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.entity.SubstituteApplicant;
 import com.example.moneybug.entity.SubstituteRequest;
 import com.example.moneybug.entity.SubstituteRequest.Status;
+import com.example.moneybug.repository.AttendanceRepository;
 import com.example.moneybug.repository.ScheduleRepository;
 import com.example.moneybug.repository.SubstituteApplicantRepository;
 import com.example.moneybug.repository.SubstituteRequestRepository;
@@ -35,6 +36,7 @@ public class SubstituteService {
     private final SubstituteRequestRepository substituteRequestRepository;
     private final SubstituteApplicantRepository substituteApplicantRepository;
     private final ScheduleRepository scheduleRepository;
+    private final AttendanceRepository attendanceRepository;
     private final StoreAccess access;
     private final NotificationPublisher notifier;
     private final OverlapChecker overlapChecker;
@@ -57,6 +59,7 @@ public class SubstituteService {
         if (!shift.isWork()) {
             throw ApiException.conflict("NOT_WORK_SHIFT", "연차·휴무·시간 미정 근무는 대타를 요청할 수 없어요");
         }
+        assertNotStarted(shift, "요청");
         if (request.getReason() == null || request.getReason().isBlank()) {
             throw ApiException.badRequest("REASON_REQUIRED", "사유를 입력해 주세요");
         }
@@ -104,7 +107,7 @@ public class SubstituteService {
         LocalDateTime now = TimeUtil.now();
 
         return CommonDto.ListResponse.of(substituteRequestRepository.findByStore(storeId).stream()
-                .filter(r -> !pendingFilter || r.isPending())
+                .filter(r -> !pendingFilter || (r.isPending() && TimeUtil.start(r.getSchedule()).isAfter(now)))
                 .filter(r -> wanted == null || r.getStatus() == wanted)
                 .filter(r -> !mine || r.getRequester().getId().equals(userId))
                 .filter(r -> !available || (r.getStatus() == Status.OPEN
@@ -246,6 +249,11 @@ public class SubstituteService {
         StoreWorker takerStaff = access.activeStaff(r.getTaker().getId(), store.getId())
                 .orElseThrow(() -> ApiException.conflict("TAKER_NOT_ACTIVE", "대타 직원이 더 이상 재직 중이 아니에요"));
         Schedule shift = r.getSchedule();
+        assertNotStarted(shift, "승인");
+        // 사장님이 그 사이 근무 담당자를 바꿨다면 이 요청은 더는 유효하지 않다.
+        if (!shift.getStoreWorker().getWorker().getId().equals(r.getRequester().getId()) || !shift.isWork()) {
+            throw ApiException.conflict("SHIFT_CHANGED", "근무가 바뀌어서 승인할 수 없어요. 요청을 거절해 주세요");
+        }
         overlapChecker.assertNoOverlap(takerStaff, shift, shift.getId());
 
         shift.setOriginalStoreWorker(shift.getStoreWorker());
@@ -257,6 +265,13 @@ public class SubstituteService {
         notifier.send(store, r.getRequester(), Notification.Type.SUB, "대타 요청이 승인됐어요",
                 label + " · " + takerStaff.getWorker().getName() + "님이 근무해요", r.getId());
         notifier.sendToStaff(store, takerStaff, Notification.Type.SUB, "대타 근무가 확정됐어요", label, r.getId());
+    }
+
+    /** 시작했거나 지난 근무, 출근 기록이 있는 근무는 대타로 바꿀 수 없다(급여가 엉킴). */
+    private void assertNotStarted(Schedule shift, String action) {
+        if (!TimeUtil.start(shift).isAfter(TimeUtil.now()) || attendanceRepository.existsByScheduleId(shift.getId())) {
+            throw ApiException.conflict("SHIFT_STARTED", "이미 시작했거나 지난 근무는 대타 " + action + "할 수 없어요");
+        }
     }
 
     private SubstituteRequest find(Integer storeId, Integer requestId) {
