@@ -23,15 +23,12 @@ import com.example.moneybug.service.FixedShiftPlanner.PartDef;
 import com.example.moneybug.service.FixedShiftPlanner.Person;
 import com.example.moneybug.service.FixedShiftPlanner.Planned;
 import com.example.moneybug.service.FixedShiftPlanner.StoreHours;
-import com.example.moneybug.service.ScheduleAiService.GenInput;
-import com.example.moneybug.service.ScheduleAiService.Member;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
-import tools.jackson.databind.JsonNode;
 
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -67,6 +64,7 @@ public class MonthScheduleService {
     private final ScheduleDeleter deleter;
     private final ShiftService shiftService;
     private final ScheduleAiService ai;
+    private final StaffWageService wageService;
     private final ScheduleJobStore jobs;
     private final StoreChangeHub changeHub;
     private final NotificationPublisher notifier;
@@ -82,7 +80,7 @@ public class MonthScheduleService {
                                 AttendanceRepository attendanceRepo, StoreWorkerRepository workerRepo,
                                 StorePartRepository partRepo, OverlapChecker overlapChecker,
                                 ScheduleDeleter deleter, ShiftService shiftService, ScheduleAiService ai,
-                                ScheduleJobStore jobs, StoreChangeHub changeHub,
+                                StaffWageService wageService, ScheduleJobStore jobs, StoreChangeHub changeHub,
                                 NotificationPublisher notifier, PlatformTransactionManager txManager) {
         this.access = access;
         this.monthRepo = monthRepo;
@@ -95,6 +93,7 @@ public class MonthScheduleService {
         this.deleter = deleter;
         this.shiftService = shiftService;
         this.ai = ai;
+        this.wageService = wageService;
         this.jobs = jobs;
         this.changeHub = changeHub;
         this.notifier = notifier;
@@ -420,32 +419,25 @@ public class MonthScheduleService {
         return s;
     }
 
-    private record Prepared(GenInput input, Map<Integer, String> names) {}
+    record Prepared(StoreHours hours, List<PartDef> parts, List<GapFiller.PartNeed> needs, List<Person> people,
+                    List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, Set<String> off,
+                    List<LocalDate> dates) {}
+
+    /** failure 가 있으면 job 실패 메시지, 아니면 planned·comment. */
+    record Outcome(List<Planned> planned, String comment, String failure) {}
 
     private void runGenerate(String jobId, Integer storeId, YearMonth ym, MonthSchedule.HolidayPolicy policy,
                              MonthSchedule.Priority priority) {
         try {
-            Prepared prep = tx.execute(st -> prepare(storeId, ym, priority));
-            GenInput in = prep.input();
-            if (in.members().isEmpty()) {
-                jobs.fail(jobId, "직원·알바생을 먼저 등록하세요");
+            Prepared prep = tx.execute(st -> prepare(storeId, ym));
+            Outcome out = compose(prep, ym, policy, priority, idLines -> ai.generate(
+                    ScheduleAiService.briefPrompt(ym.toString(), idLines, priority, policy))
+                    .path("comment").asString(""));
+            if (out.failure() != null) {
+                jobs.fail(jobId, out.failure());
                 return;
             }
-            boolean hasFlex = in.members().stream().anyMatch(m -> !m.person().partTimer());
-            List<Planned> planned = new ArrayList<>(FixedShiftPlanner.fixedShifts(in.hours(), in.parts(),
-                    in.members().stream().map(Member::person).filter(Person::partTimer).toList(), in.dates()));
-            String comment = "직원(유동 근무)이 없어 알바생 고정 근무로만 채웠어요.";
-            if (hasFlex) {
-                JsonNode out = ai.generate(ScheduleAiService.buildPrompt(in));
-                planned.addAll(ScheduleAiService.toShifts(out, in));
-                comment = ScheduleAiService.nameBack(out.path("comment").asString(""), prep.names());
-            }
-            if (planned.isEmpty()) {
-                jobs.fail(jobId, "AI가 조건에 맞는 근무를 만들지 못했어요");
-                return;
-            }
-            String finalComment = comment;
-            tx.executeWithoutResult(st -> applyGenerated(storeId, ym, planned, finalComment, policy, priority));
+            tx.executeWithoutResult(st -> applyGenerated(storeId, ym, out.planned(), out.comment(), policy, priority));
             jobs.done(jobId, "");
             changeHub.bump(storeId); // 백그라운드 생성은 요청이 끝난 뒤라 인터셉터가 못 잡는다
         } catch (ApiException e) {
@@ -457,17 +449,54 @@ public class MonthScheduleService {
         }
     }
 
-    private Prepared prepare(Integer storeId, YearMonth ym, MonthSchedule.Priority priority) {
+    /** DB·AI 없는 순수 흐름: 고정 근무 → 부족분 충원 → 요약 → (실패해도 되는) AI 브리핑. */
+    static Outcome compose(Prepared p, YearMonth ym, MonthSchedule.HolidayPolicy policy,
+                           MonthSchedule.Priority priority, java.util.function.Function<List<String>, String> brief) {
+        if (p.people().isEmpty()) return new Outcome(List.of(), null, "직원·알바생을 먼저 등록하세요");
+        List<Planned> existing = FixedShiftPlanner.fixedShifts(p.hours(), p.parts(), p.people(), p.dates()).stream()
+                .filter(s -> !p.off().contains(s.staffId() + "|" + s.date())).toList();
+        List<Integer> flexIds = p.people().stream()
+                .filter(x -> !x.partTimer() && (x.workHours() == null || x.workHours().stream().allMatch(w -> w == null)))
+                .map(Person::id).toList();
+        Map<Integer, Integer> wages = new HashMap<>();
+        p.staff().forEach(s -> wages.put(s.id(), s.wage()));
+        GapFiller.Result r = GapFiller.fill(p.hours(), p.needs(), existing, flexIds, wages, p.off(), p.dates(), priority);
+        List<Planned> planned = new ArrayList<>(existing);
+        planned.addAll(r.shifts());
+        if (planned.isEmpty()) return new Outcome(planned, null, "고정 파트·근무시간을 먼저 정하세요");
+        List<String> lines = ScheduleInsights.summarize(ym, planned, p.staff(), r.unfilled(), policy, priority).lines();
+        String comment = String.join("\n", lines);
+        try {
+            List<ScheduleInsights.StaffInfo> anon = p.staff().stream()
+                    .map(s -> new ScheduleInsights.StaffInfo(s.id(), "#" + s.id(), s.partTimer(), s.wage())).toList();
+            List<String> idLines = ScheduleInsights.summarize(ym, planned, anon, r.unfilled(), policy, priority).lines();
+            String ment = ScheduleAiService.nameBack(brief.apply(idLines), p.names());
+            if (!ment.isBlank()) comment = ment.strip() + "\n\n" + comment;
+        } catch (RuntimeException e) {
+            log.warn("AI 브리핑 실패, 요약만 저장: {}", e.getClass().getSimpleName());
+        }
+        return new Outcome(planned, comment, null);
+    }
+
+    private Prepared prepare(Integer storeId, YearMonth ym) {
         Store store = access.store(storeId);
         Ctx c = ctx(store);
-        List<Member> members = new ArrayList<>();
+        List<LocalDate> dates = targetDates(ym);
+        List<ScheduleInsights.StaffInfo> staff = new ArrayList<>();
         Map<Integer, String> names = new HashMap<>();
         for (StoreWorker w : c.workers.values()) {
-            members.add(new Member(person(w), w.getKind() == StoreWorker.Kind.MINOR));
+            int wage = StaffWageService.wageOn(wageService.rows(w.getId()), ym.atDay(1), w.getHourlyWage());
+            boolean partTimer = person(w).partTimer();
+            staff.add(new ScheduleInsights.StaffInfo(w.getId(), w.getWorker().getName(), partTimer, wage));
             names.put(w.getId(), w.getWorker().getName());
         }
-        members.sort(Comparator.comparingInt(m -> m.person().id()));
-        return new Prepared(new GenInput(ym.toString(), c.hours, c.parts, members, targetDates(ym), priority), names);
+        Set<String> off = scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth()).stream()
+                .filter(s -> s.getKind() != Schedule.Kind.WORK)
+                .map(s -> s.getStoreWorker().getId() + "|" + s.getWorkDate()).collect(Collectors.toSet());
+        List<GapFiller.PartNeed> needs = partRepo.findByStoreIdOrderByStartMinAsc(storeId).stream()
+                .map(x -> new GapFiller.PartNeed(x.getName(), x.getStartMin(), x.getEndMin(),
+                        x.getNeed() == null ? 1 : x.getNeed())).toList();
+        return new Prepared(c.hours, c.parts, needs, c.people, staff, names, off, dates);
     }
 
     private void applyGenerated(Integer storeId, YearMonth ym, List<Planned> planned, String comment,
