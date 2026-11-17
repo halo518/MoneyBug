@@ -34,8 +34,8 @@ public class AttendanceService {
 
     /** 근무 시작 이 시간(분) 전부터 출근할 수 있다. */
     private static final int CLOCK_IN_EARLY_MINUTES = 30;
-    /** 소정 종료 후 이 시간(시간)이 지나면 퇴근 기록 불가 — 사장님이 수정해야 한다. */
-    static final int CLOCK_OUT_GRACE_HOURS = 12;
+    /** 소정 종료 후 이 시간(시간)이 지나면 퇴근 기록 불가 — AttendanceAutoClockOut 이 예정 종료로 자동 처리한다. */
+    static final int CLOCK_OUT_GRACE_HOURS = 4;
     /** 한 근태 기록의 최대 길이(시간). */
     static final int MAX_WORK_HOURS = 24;
     /** 서버·기기 시각 오차 허용(분). */

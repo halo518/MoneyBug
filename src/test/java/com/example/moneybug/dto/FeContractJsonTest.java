@@ -45,7 +45,7 @@ class FeContractJsonTest {
                     "substitutePush", "defaultDeduction", "parts", "monthlyTotals", "scheduleConfirmedAt",
                     "openMin", "closeMin", "weekendOpenMin", "weekendCloseMin", "sizeMode"),
             "staff", Set.of("id", "storeId", "personId", "part", "wage", "deduction", "weeklyHolidayAuto", "premium",
-                    "tone", "kind", "joinedAt", "status", "requestedAt", "contract", "fixedParts", "workHours"),
+                    "tone", "kind", "joinedAt", "status", "requestedAt", "contract", "fixedParts", "workHours", "wages", "leftAt"),
             "shifts", Set.of("id", "storeId", "staffId", "date", "startMin", "endMin", "part", "breakMin",
                     "isSubstitute", "originalStaffId", "kind", "timeTbd"),
             "attendance", Set.of("id", "storeId", "shiftId", "staffId", "clockIn", "clockOut", "editReason"),
@@ -96,6 +96,10 @@ class FeContractJsonTest {
         JsonNode staff = json.get("staff").get(0);
         assertEquals(7, staff.get("fixedParts").size());
         assertEquals("오픈", staff.get("fixedParts").get(0).get(0).asString());
+        assertEquals("2026-06-01", staff.get("leftAt").asString());
+        assertEquals(2, staff.get("wages").size());
+        assertEquals("2000-01-01", staff.get("wages").get(0).get("from").asString());
+        assertEquals(10320, staff.get("wages").get(1).get("wage").asInt());
         assertEquals(600, staff.get("workHours").get(1).get("startMin").asInt());
         assertTrue(staff.get("workHours").get(2).isNull());
         JsonNode ms = json.get("schedules").get(0);
@@ -181,6 +185,7 @@ class FeContractJsonTest {
         sw.setHourlyWage(10320);
         sw.setPart("오픈");
         sw.setJoinedAt(LocalDate.of(2026, 3, 1));
+        sw.setLeftAt(LocalDate.of(2026, 6, 1));
         StaffPrefs.setFixedParts(sw, List.of(List.of("오픈"), List.of(), List.of(), List.of(), List.of(),
                 List.of(), List.of()));
         StaffPrefs.setWorkHours(sw, java.util.Arrays.asList(null, new StaffPrefs.WorkHours(600, 960), null, null,
@@ -250,7 +255,8 @@ class FeContractJsonTest {
                 new AppStateDto.Session(true, "employer", "1", "1", "", "10"),
                 List.of(AppStateDto.Person.from(owner), AppStateDto.Person.from(taewoo)),
                 List.of(StoreDetailDto.Response.from(store, List.of(part), Map.of())),
-                List.of(StaffDto.from(sw, ContractDto.Response.from(c))),
+                List.of(StaffDto.from(sw, ContractDto.Response.from(c), List.of(wageRow(LocalDate.of(2000, 1, 1), 10000),
+                        wageRow(LocalDate.of(2026, 5, 1), 10320)))),
                 List.of(ScheduleDto.Response.from(s)),
                 List.of(AttendanceCalc.view(a, LocalDateTime.of(2026, 5, 14, 12, 0))),
                 List.of(SubstituteRequestDto.Response.from(r, List.of(taewoo), u -> u.getId() == 2 ? 20 : null)),
@@ -258,6 +264,13 @@ class FeContractJsonTest {
                 List.of(NotificationDto.Response.from(noti)),
                 List.of(MonthScheduleDto.Response.from(ms)),
                 List.of(ScheduleTemplateDto.Response.from(tpl)));
+    }
+
+    private static com.example.moneybug.entity.StaffWage wageRow(LocalDate from, int wage) {
+        var w = new com.example.moneybug.entity.StaffWage();
+        w.setEffectiveFrom(from);
+        w.setWage(wage);
+        return w;
     }
 
     private static User user(int id, String name) {
