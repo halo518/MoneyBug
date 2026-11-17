@@ -2,6 +2,8 @@ package com.example.moneybug.dto;
 
 import com.example.moneybug.entity.MonthSchedule;
 import com.example.moneybug.entity.Schedule;
+import com.example.moneybug.service.FixedShiftPlanner;
+import com.example.moneybug.service.GapFiller;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -42,7 +44,30 @@ public class MonthScheduleCommandDto {
             MonthSchedule.HolidayPolicy weeklyHolidayPay,
             MonthSchedule.Priority priority) {}
 
-    public record JobResponse(String jobId) {}
+    public record ApplyRequest(@NotBlank String planId) {}
+
+    /** 미리보기 근무 한 칸. part 가 없는 직원 유동 근무는 "직원". */
+    public record PlannedShift(Integer staffId, LocalDate date, int startMin, int endMin, String part, int breakMin) {}
+
+    /** 못 채운 칸. missing = 모자란 인원. */
+    public record Unfilled(LocalDate date, String part, int startMin, int endMin, int missing) {}
+
+    /** replacing = 적용하면 지워질 기존 근무 수(오늘 이후~월말 WORK 중 출근 기록 없는 것). */
+    public record PreviewResponse(String planId, String month, List<PlannedShift> shifts, List<String> lines,
+                                  long laborCost, List<Unfilled> unfilled, int replacing) {
+
+        public static PreviewResponse of(String planId, String month, List<FixedShiftPlanner.Planned> planned,
+                                         String flexPart, List<String> lines, long laborCost,
+                                         List<GapFiller.Gap> gaps, int replacing) {
+            return new PreviewResponse(planId, month,
+                    planned.stream().map(p -> new PlannedShift(p.staffId(), p.date(), p.startMin(), p.endMin(),
+                            p.part() != null ? p.part() : flexPart, p.breakMin())).toList(),
+                    lines, laborCost,
+                    gaps.stream().map(g -> new Unfilled(g.date(), g.part(), g.startMin(), g.endMin(), g.missing()))
+                            .toList(),
+                    replacing);
+        }
+    }
 
     public record TemplateCreateRequest(
             @NotBlank(message = "템플릿 이름을 입력하세요.") String name,

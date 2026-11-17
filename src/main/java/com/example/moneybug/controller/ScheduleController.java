@@ -4,7 +4,6 @@ import com.example.moneybug.dto.MonthScheduleCommandDto;
 import com.example.moneybug.dto.MonthScheduleDto;
 import com.example.moneybug.dto.ScheduleTemplateDto;
 import com.example.moneybug.service.MonthScheduleService;
-import com.example.moneybug.service.ScheduleJobStore;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -12,7 +11,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -21,8 +19,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-/** 월 근무표·템플릿·AI 생성 (웹 사장님 화면). month = yyyy-MM. 권한: 사장님 */
-@Tag(name = "월 근무표", description = "월 근무표 만들기·자동 채우기·통째 저장·확정·삭제, 템플릿, AI 생성")
+/** 월 근무표·템플릿·자동 생성 (웹 사장님 화면). month = yyyy-MM. 권한: 사장님 */
+@Tag(name = "월 근무표", description = "월 근무표 만들기·자동 채우기·통째 저장·확정·삭제, 템플릿, 자동 생성(미리보기→적용)")
 @RestController
 @RequestMapping("/api/v1/stores/{storeId}")
 @RequiredArgsConstructor
@@ -69,20 +67,20 @@ public class ScheduleController {
         service.delete(userId.intValue(), storeId, month);
     }
 
-    @Operation(summary = "AI 근무표 생성 시작", description = "202 + jobId. GET /schedule-jobs/{jobId} 로 확인해요")
-    @PostMapping("/schedules/generate")
-    @ResponseStatus(HttpStatus.ACCEPTED)
-    public MonthScheduleCommandDto.JobResponse generate(
+    @Operation(summary = "근무표 자동 생성 미리보기", description = "고정 근무 + 빈칸 충원을 계산만 해요(저장 없음). 30분 안에 apply")
+    @PostMapping("/schedules/generate/preview")
+    public MonthScheduleCommandDto.PreviewResponse preview(
             @AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
             @Valid @RequestBody MonthScheduleCommandDto.GenerateRequest request) {
-        return new MonthScheduleCommandDto.JobResponse(service.generate(userId.intValue(), storeId, request));
+        return service.preview(userId.intValue(), storeId, request);
     }
 
-    @Operation(summary = "AI 생성 작업 상태", description = "status: running / done / failed")
-    @GetMapping("/schedule-jobs/{jobId}")
-    public ScheduleJobStore.JobStatus job(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
-                                          @PathVariable String jobId) {
-        return service.job(userId.intValue(), storeId, jobId);
+    @Operation(summary = "미리보기 적용", description = "오늘 이후 출근 기록 없는 근무를 바꿔 넣어요. 만료 410 PLAN_EXPIRED. AI 설명은 잠시 뒤 붙어요")
+    @PostMapping("/schedules/generate/apply")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void apply(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
+                      @Valid @RequestBody MonthScheduleCommandDto.ApplyRequest request) {
+        service.applyPlan(userId.intValue(), storeId, request.planId());
     }
 
     @Operation(summary = "템플릿 저장", description = "그 달 첫 완전한 월~일 주를 요일 패턴으로 저장해요")

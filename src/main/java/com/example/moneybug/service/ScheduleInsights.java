@@ -27,6 +27,14 @@ public final class ScheduleInsights {
     public static Summary summarize(YearMonth month, List<FixedShiftPlanner.Planned> shifts, List<StaffInfo> staff,
                                     List<GapFiller.Gap> unfilled, MonthSchedule.HolidayPolicy policy,
                                     MonthSchedule.Priority priority) {
+        return summarize(month, shifts, List.of(), staff, unfilled, policy, priority);
+    }
+
+    /** prior: 맥락 근무(첫 대상일 앞 같은 주 + 대상일의 출근 기록 있는 근무). 금액에는 안 넣고 주 7일 경고 판단에만 쓴다. */
+    public static Summary summarize(YearMonth month, List<FixedShiftPlanner.Planned> shifts,
+                                    List<FixedShiftPlanner.Planned> prior, List<StaffInfo> staff,
+                                    List<GapFiller.Gap> unfilled, MonthSchedule.HolidayPolicy policy,
+                                    MonthSchedule.Priority priority) {
         // 직원별 → 주(월요일) → 실근로 분
         Map<Integer, Map<LocalDate, Integer>> weekly = new HashMap<>();
         Map<Integer, Long> totalMin = new HashMap<>();
@@ -80,6 +88,19 @@ public final class ScheduleInsights {
                 tips.stream().limit(5).forEach(t -> lines.add(t.text()));
             }
         }
+        // 빈칸 채우기는 7일째를 넣지 않으니 주 7일이면 고정·기존 근무만으로 그렇게 된 것이다.
+        Map<Integer, Map<LocalDate, Set<LocalDate>>> days = new HashMap<>();
+        for (FixedShiftPlanner.Planned p : java.util.stream.Stream.concat(prior.stream(), shifts.stream()).toList()) {
+            days.computeIfAbsent(p.staffId(), k -> new java.util.TreeMap<>())
+                    .computeIfAbsent(p.date().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)),
+                            k -> new HashSet<>()).add(p.date());
+        }
+        days.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> e.getValue().forEach((monday, set) -> {
+            if (set.size() < 7) return;
+            StaffInfo s = byId.get(e.getKey());
+            lines.add((s == null ? "#" + e.getKey() : s.name()) + "님 " + monday.getMonthValue() + "/"
+                    + monday.getDayOfMonth() + "주 7일 근무예요. 주 1회 휴일이 필요해요");
+        }));
         if (unfilled != null && !unfilled.isEmpty()) {
             int missing = unfilled.stream().mapToInt(GapFiller.Gap::missing).sum();
             StringBuilder sb = new StringBuilder("직원이 부족해 " + missing + "칸을 못 채웠어요:");

@@ -31,10 +31,11 @@ class MonthScheduleSaveShiftsTest {
     MonthScheduleRepository monthRepo = mock(MonthScheduleRepository.class);
     ScheduleDeleter deleter = mock(ScheduleDeleter.class);
     NotificationPublisher notifier = mock(NotificationPublisher.class);
+    ScheduleAiService ai = mock(ScheduleAiService.class);
     MonthScheduleService service = new MonthScheduleService(mock(StoreAccess.class), monthRepo,
             mock(ScheduleTemplateRepository.class), scheduleRepo, attendanceRepo, workerRepo,
             mock(StorePartRepository.class), mock(OverlapChecker.class), deleter, mock(ShiftService.class),
-            mock(ScheduleAiService.class), mock(StaffWageService.class), mock(ScheduleJobStore.class), mock(StoreChangeHub.class),
+            ai, mock(StaffWageService.class), mock(StoreChangeHub.class),
             notifier, mock(PlatformTransactionManager.class));
 
     static Schedule shift(int id, StoreWorker sw, LocalDate d, int start, int end) {
@@ -148,14 +149,12 @@ class MonthScheduleSaveShiftsTest {
     }
 
     @Test
-    void jobStoreAllowsOneRunningPerStore() {
-        var store = new ScheduleJobStore();
-        String id = store.createIfNoneRunning(1);
-        assertThat(id).isNotNull();
-        assertThat(store.createIfNoneRunning(1)).isNull();
-        assertThat(store.createIfNoneRunning(2)).isNotNull();
-        store.fail(id, "x");
-        assertThat(store.createIfNoneRunning(1)).isNotNull();
+    void applyUnknownPlanIsGone() {
+        assertThatThrownBy(() -> service.applyPlan(7, 1, "nope"))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.GONE);
+                    assertThat(e.getCode()).isEqualTo("PLAN_EXPIRED");
+                });
     }
 
     /** 확정된 달: 바뀐 직원에게만 한 건씩 알림, 그대로인 직원은 알림 없음. 자동 채우기는 409. */
@@ -198,5 +197,23 @@ class MonthScheduleSaveShiftsTest {
         service.saveShifts(7, 1, "2026-12", new MonthScheduleCommandDto.SaveShiftsRequest(List.of(
                 item(null, 45, LocalDate.of(2026, 12, 3), 540, 1080))));
         verifyNoInteractions(notifier);
+    }
+
+    @Test
+    void briefLocksStoreBeforeCheckingComment() {
+        var prep = MonthScheduleComposeTest.prep(true, java.util.Set.of());
+        var plan = MonthScheduleComposeTest.plan(prep, MonthScheduleComposeTest.compose(prep));
+        MonthSchedule ms = new MonthSchedule();
+        ms.setAiComment(plan.comment());
+        when(ai.generate(any())).thenReturn(tools.jackson.databind.json.JsonMapper.builder().build()
+                .readTree("{\"comment\":\"브리핑\"}"));
+        when(monthRepo.findByStoreIdAndMonth(1, "2026-11")).thenReturn(Optional.of(ms));
+
+        service.attachBrief(1, plan);
+
+        var order = inOrder(monthRepo);
+        order.verify(monthRepo).lockStore(1);
+        order.verify(monthRepo).findByStoreIdAndMonth(1, "2026-11");
+        assertThat(ms.getAiComment()).isEqualTo("브리핑\n\n" + plan.comment());
     }
 }

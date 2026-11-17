@@ -137,6 +137,9 @@ public class StaffService {
         if (request.workHours() != null) {
             StaffPrefs.setWorkHours(sw, validWorkHours(request.workHours()));
         }
+        if (request.availHours() != null) {
+            StaffPrefs.setAvailHours(sw, validWorkHours(request.availHours()));
+        }
         return staffAssembler.toDto(sw);
     }
 

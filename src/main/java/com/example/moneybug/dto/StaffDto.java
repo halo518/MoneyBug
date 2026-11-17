@@ -28,6 +28,7 @@ public record StaffDto(
         ContractDto.Response contract,
         List<List<String>> fixedParts,
         List<StaffPrefs.WorkHours> workHours,
+        List<StaffPrefs.WorkHours> availHours,
         List<WageEntry> wages,
         LocalDate leftAt) {
 
@@ -48,7 +49,7 @@ public record StaffDto(
                 .certDaysLeft(person.getCertDaysLeft())
                 .build();
         return new StaffDto(id, storeId, personId, p, part, kind, 0, null, weeklyHolidayAuto,
-                false, tone, status, joinedAt, requestedAt, null, fixedParts, workHours, List.of(), leftAt);
+                false, tone, status, joinedAt, requestedAt, null, fixedParts, workHours, availHours, List.of(), leftAt);
     }
 
     public static StaffDto from(StoreWorker sw, ContractDto.Response contract) {
@@ -77,6 +78,7 @@ public record StaffDto(
                 contract,
                 StaffPrefs.fixedParts(sw),
                 StaffPrefs.workHours(sw),
+                StaffPrefs.availHours(sw),
                 wageRows.stream().map(w -> new WageEntry(w.getEffectiveFrom(), w.getWage())).toList(),
                 sw.getLeftAt());
     }

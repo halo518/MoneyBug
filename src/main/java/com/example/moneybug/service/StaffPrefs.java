@@ -7,7 +7,7 @@ import tools.jackson.databind.json.JsonMapper;
 import java.util.ArrayList;
 import java.util.List;
 
-/** StoreWorker.fixedParts / workHours (JSON 텍스트) 읽기·쓰기. 항상 7칸(월~일)으로 돌려준다. */
+/** StoreWorker.fixedParts / workHours / availHours (JSON 텍스트) 읽기·쓰기. 항상 7칸(월~일)으로 돌려준다. */
 public final class StaffPrefs {
 
     private StaffPrefs() {}
@@ -34,9 +34,19 @@ public final class StaffPrefs {
 
     /** 저장된 값이 없으면 null. */
     public static List<WorkHours> workHours(StoreWorker sw) {
-        if (sw.getWorkHours() == null || sw.getWorkHours().isBlank()) return null;
+        return hours(sw.getWorkHours());
+    }
+
+    /** 알바 추가 근무 가능 시간. 저장된 값이 없으면 7칸 null. */
+    public static List<WorkHours> availHours(StoreWorker sw) {
+        List<WorkHours> h = hours(sw.getAvailHours());
+        return h != null ? h : java.util.Arrays.asList(new WorkHours[7]);
+    }
+
+    private static List<WorkHours> hours(String json) {
+        if (json == null || json.isBlank()) return null;
         try {
-            List<WorkHours> raw = MAPPER.readValue(sw.getWorkHours(), new TypeReference<List<WorkHours>>() {});
+            List<WorkHours> raw = MAPPER.readValue(json, new TypeReference<List<WorkHours>>() {});
             List<WorkHours> out = new ArrayList<>();
             for (int i = 0; i < 7; i++) out.add(i < raw.size() ? raw.get(i) : null);
             return out;
@@ -51,5 +61,9 @@ public final class StaffPrefs {
 
     public static void setWorkHours(StoreWorker sw, List<WorkHours> value) {
         sw.setWorkHours(value == null ? null : MAPPER.writeValueAsString(value));
+    }
+
+    public static void setAvailHours(StoreWorker sw, List<WorkHours> value) {
+        sw.setAvailHours(value == null ? null : MAPPER.writeValueAsString(value));
     }
 }

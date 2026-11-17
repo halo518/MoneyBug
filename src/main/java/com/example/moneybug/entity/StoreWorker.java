@@ -170,6 +170,10 @@ public class StoreWorker {
     @Column(name = "work_hours", columnDefinition = "TEXT")
     private String workHours;
 
+    // 알바생 추가 근무 가능 시간: JSON [{startMin,endMin}|null x7] 또는 null. 빈칸 채우기 후보 범위.
+    @Column(name = "avail_hours", columnDefinition = "TEXT")
+    private String availHours;
+
     // [추가] 입사일(승인일)
     @Column(name = "joined_at")
     private LocalDate joinedAt;

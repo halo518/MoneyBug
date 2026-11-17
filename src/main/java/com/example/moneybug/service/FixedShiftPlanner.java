@@ -25,8 +25,35 @@ public final class FixedShiftPlanner {
 
     public record WorkHours(int startMin, int endMin) {}
 
-    /** partTimer=true 면 알바생(fixedParts 사용), 아니면 직원(workHours 사용). 리스트는 월~일 7칸, 없으면 null. */
-    public record Person(int id, boolean partTimer, List<List<String>> fixedParts, List<WorkHours> workHours) {}
+    /**
+     * partTimer=true 면 알바생(fixedParts 사용), 아니면 직원(workHours 사용). 리스트는 월~일 7칸, 없으면 null.
+     * availHours: 알바생이 고정 파트 밖에 추가로 일할 수 있는 요일별 시간(빈칸 채우기 후보 범위).
+     * minor: 연소 근로자(1일 7시간·주 35시간, 22:00~06:00 금지).
+     */
+    public record Person(int id, boolean partTimer, List<List<String>> fixedParts, List<WorkHours> workHours,
+                         List<WorkHours> availHours, boolean minor) {
+        public Person(int id, boolean partTimer, List<List<String>> fixedParts, List<WorkHours> workHours) {
+            this(id, partTimer, fixedParts, workHours, null, false);
+        }
+
+        public Person(int id, boolean partTimer, List<List<String>> fixedParts, List<WorkHours> workHours,
+                      List<WorkHours> availHours) {
+            this(id, partTimer, fixedParts, workHours, availHours, false);
+        }
+
+        /** 고정 시간 없는 직원: 하루 종일 빈칸 후보. */
+        public boolean flex() {
+            return !partTimer && (workHours == null || workHours.stream().allMatch(w -> w == null));
+        }
+
+        /** 그 날 [s,e] 근무를 맡을 수 있는 시간인지(flex 직원은 항상, 알바생은 availHours 안일 때). */
+        public boolean availableFor(LocalDate date, int s, int e) {
+            if (flex()) return true;
+            if (!partTimer) return false;
+            WorkHours w = at(availHours, date.getDayOfWeek().getValue() - 1);
+            return w != null && w.startMin() <= s && w.endMin() >= e;
+        }
+    }
 
     /** part == null 이면 직원 유동 근무. */
     public record Planned(int staffId, LocalDate date, int startMin, int endMin, String part, int breakMin) {}
@@ -58,9 +85,18 @@ public final class FixedShiftPlanner {
                     List<String> names = at(p.fixedParts(), dow);
                     if (names == null) continue;
                     for (PartDef part : sorted) {
-                        if (names.contains(part.name())) {
-                            out.add(new Planned(p.id(), date, part.startMin(), part.endMin(), part.name(), part.breakMin()));
+                        if (!names.contains(part.name())) continue;
+                        // 그날 영업시간으로 자른다. 잘렸으면 휴게도 잘린 길이로 다시 정한다.
+                        int s = Math.max(part.startMin(), hours.open(date)), e = Math.min(part.endMin(), hours.close(date));
+                        if (e <= s) {
+                            // 새벽 파트: 전날 야간 영업(마감 > 1440)의 이어지는 구간과 다시 자른다.
+                            LocalDate prev = date.minusDays(1);
+                            s = Math.max(part.startMin(), hours.open(prev) - 1440);
+                            e = Math.min(part.endMin(), hours.close(prev) - 1440);
                         }
+                        if (e <= s) continue;
+                        boolean cut = s != part.startMin() || e != part.endMin();
+                        out.add(new Planned(p.id(), date, s, e, part.name(), cut ? minBreakFor(e - s) : part.breakMin()));
                     }
                 } else {
                     WorkHours w = at(p.workHours(), dow);
