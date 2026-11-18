@@ -21,5 +21,9 @@ public interface NoticeReadRepository extends JpaRepository<NoticeRead, Integer>
                      @org.springframework.data.repository.query.Param("mappingId") Integer mappingId,
                      @org.springframework.data.repository.query.Param("readAt") LocalDateTime readAt);
 
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("delete from NoticeRead r where r.notice.id = :noticeId")
+    int deleteByNoticeId(@org.springframework.data.repository.query.Param("noticeId") Integer noticeId);
+
     boolean existsByNoticeIdAndStoreWorkerId(Integer noticeId, Integer mappingId);
 }
