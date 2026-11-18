@@ -2,12 +2,10 @@ package com.example.moneybug.controller;
 
 import com.example.moneybug.auth.jwt.JwtProvider;
 import com.example.moneybug.config.SecurityConfig;
-import com.example.moneybug.entity.Store;
-import com.example.moneybug.repository.StoreRepository;
-import com.example.moneybug.repository.StoreWorkerRepository;
 import com.example.moneybug.service.MeService;
 import com.example.moneybug.service.StateService;
 import com.example.moneybug.service.StoreChangeHub;
+import com.example.moneybug.service.WatchedStores;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
@@ -17,7 +15,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-import java.util.List;
+import java.util.Set;
 
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
@@ -40,13 +38,10 @@ class MeChangesLongPollTest {
     @Autowired StoreChangeHub hub;
     @MockitoBean MeService meService;
     @MockitoBean StateService stateService;
-    @MockitoBean StoreRepository storeRepository;
-    @MockitoBean StoreWorkerRepository storeWorkerRepository;
+    @MockitoBean WatchedStores watchedStores;
 
     private String auth() {
-        Store s = new Store();
-        s.setId(1);
-        when(storeRepository.findByEmployerId(7)).thenReturn(List.of(s));
+        when(watchedStores.of(7)).thenReturn(Set.of(1));
         return "Bearer " + jwt.createAccessToken(7L);
     }
 
@@ -62,6 +57,12 @@ class MeChangesLongPollTest {
                 .andExpect(request().asyncStarted()).andReturn();
         hub.bump(1);
         mvc.perform(asyncDispatch(wait)).andExpect(status().isOk()).andExpect(jsonPath("$.changed").value(true));
+    }
+
+    @Test
+    void badSinceIsApiError() throws Exception {
+        mvc.perform(get("/api/v1/me/changes?since=abc").header("Authorization", auth()))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_PARAM"));
     }
 
     @Test
