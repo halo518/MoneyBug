@@ -24,6 +24,13 @@ public class AiLaborService {
 
     static final int LIMIT_PER_HOUR = 20;
     static final String URL = "https://api.anthropic.com/v1/messages";
+    static final int MAX_QUESTION = 1000;
+    private static final java.util.regex.Pattern GRAPHEME = java.util.regex.Pattern.compile("\\X");
+
+    /** 글자 수: FE 입력칸(maxLength)처럼 그래핌 단위로 센다(이모지 1개 = 1자). */
+    static long length(String s) {
+        return GRAPHEME.matcher(s).results().count();
+    }
 
     private final StoreAccess access;
     private final RestClient client;
@@ -55,6 +62,9 @@ public class AiLaborService {
 
     public AiDto.Response ask(Integer userId, Integer storeId, String question) {
         Store store = access.requireOwner(userId, storeId);
+        if (question != null && length(question) > MAX_QUESTION) {
+            throw ApiException.badRequest("QUESTION_TOO_LONG", "질문은 " + MAX_QUESTION + "자까지 쓸 수 있어요");
+        }
         if (apiKey == null || apiKey.isBlank()) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "AI_DISABLED", "AI 도우미가 아직 설정되지 않았어요");
         }
