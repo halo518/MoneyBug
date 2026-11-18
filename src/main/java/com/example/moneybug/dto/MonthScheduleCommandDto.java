@@ -70,7 +70,8 @@ public class MonthScheduleCommandDto {
     }
 
     public record TemplateCreateRequest(
-            @NotBlank(message = "템플릿 이름을 입력하세요.") String name,
+            @NotBlank(message = "템플릿 이름을 입력하세요.")
+            @jakarta.validation.constraints.Size(max = 100, message = "템플릿 이름은 100자까지 입력할 수 있어요.") String name,
             @NotNull @Pattern(regexp = MONTH_RE, message = "월 형식이 올바르지 않아요") String month) {}
 
     public record TemplateApplyRequest(
