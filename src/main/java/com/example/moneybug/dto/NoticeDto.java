@@ -4,9 +4,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 import com.example.moneybug.entity.Notice;
 import com.example.moneybug.entity.Store;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -22,12 +19,11 @@ public class NoticeDto {
     @NoArgsConstructor
     public static class Request {
         // [변경] storeId 제거: 경로의 {storeId} 로 결정한다.
-        // 설계서: 제목·내용이 trim 후 비면 400
-        @NotBlank
-        @Size(max = 200)
+        // 설계서: 제목·내용이 trim 후 비면 400 NOTICE_REQUIRED_FIELDS, 길이는 trim 후 글자 수로 — 둘 다 NoticeService 에서 검사한다.
+        // (@NotBlank/@Size 를 두면 VALIDATION_FAILED 가 먼저 나가서 설계한 오류가 안 나온다.)
         private String title;
 
-        @NotBlank
+        // FE 키 body. 검증 애너테이션을 두지 않으므로 details 에 Java 필드명 content 가 나가지 않는다.
         @JsonProperty("body")
         private String content;
 
