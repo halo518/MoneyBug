@@ -79,11 +79,11 @@ public class KakaoClient {
                     .body(form)
                     .retrieve().body(TokenResponse.class);
             if (res == null || res.accessToken() == null) {
-                throw new AuthException("Kakao token exchange returned no access token");
+                throw loginFailed(null);
             }
             return res.accessToken();
         } catch (RestClientException e) {
-            throw new AuthException("Kakao token exchange failed", e);
+            throw loginFailed(e);
         }
     }
 
@@ -92,25 +92,27 @@ public class KakaoClient {
         if (appId.isBlank()) {
             return;
         }
+        requireHeaderSafe(accessToken);
         try {
             TokenInfo info = restClient.get().uri(TOKEN_INFO_URL)
                     .header("Authorization", "Bearer " + accessToken)
                     .retrieve().body(TokenInfo.class);
             if (info == null || !appId.equals(info.appId())) {
-                throw new AuthException("Kakao token was issued for a different app");
+                throw invalidToken(null);
             }
-        } catch (RestClientException e) {
-            throw new AuthException("Invalid Kakao access token", e);
+        } catch (RestClientException | IllegalArgumentException e) {
+            throw invalidToken(e);
         }
     }
 
     public KakaoUser fetchUser(String accessToken) {
+        requireHeaderSafe(accessToken);
         try {
             UserMe me = restClient.get().uri(USER_ME_URL)
                     .header("Authorization", "Bearer " + accessToken)
                     .retrieve().body(UserMe.class);
             if (me == null || me.id() == null) {
-                throw new AuthException("Kakao user info was empty");
+                throw loginFailed(null);
             }
             UserMe.Account account = me.kakaoAccount();
             UserMe.Profile profile = account == null ? null : account.profile();
@@ -119,8 +121,25 @@ public class KakaoClient {
                     profile == null ? null : profile.nickname(),
                     account == null ? null : account.email(),
                     profile == null ? null : profile.profileImageUrl());
-        } catch (RestClientException e) {
-            throw new AuthException("Invalid Kakao access token", e);
+        } catch (RestClientException | IllegalArgumentException e) {
+            throw invalidToken(e);
         }
+    }
+
+    /** 카카오 토큰은 ASCII 라서 한글·이모지·공백·제어문자가 있으면 헤더를 만들기 전에 거절한다(JDK 가 IllegalArgumentException 을 던져 500 이 되던 것). */
+    static void requireHeaderSafe(String accessToken) {
+        if (accessToken == null || accessToken.isEmpty()
+                || !accessToken.chars().allMatch(c -> c > 0x20 && c < 0x7f)) {
+            throw invalidToken(null);
+        }
+    }
+
+    private static AuthException invalidToken(Throwable cause) {
+        return new AuthException(AuthException.INVALID_KAKAO_TOKEN,
+                "카카오 로그인 정보가 올바르지 않아요. 다시 로그인해 주세요", cause);
+    }
+
+    private static AuthException loginFailed(Throwable cause) {
+        return new AuthException(AuthException.KAKAO_LOGIN_FAILED, "카카오 로그인에 실패했어요. 다시 시도해 주세요", cause);
     }
 }

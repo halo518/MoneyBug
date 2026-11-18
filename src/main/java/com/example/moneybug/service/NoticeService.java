@@ -29,6 +29,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class NoticeService {
 
+    private static final int TITLE_MAX = 200;   // notice.title VARCHAR(200)
     private static final int CONTENT_MAX = 5000;
     private static final java.time.Duration REMIND_COOLDOWN = java.time.Duration.ofHours(1);
 
@@ -81,17 +82,21 @@ public class NoticeService {
      */
     public NoticeViewDto.View publish(Integer userId, Integer storeId, NoticeDto.Request request) {
         Store store = access.requireOwner(userId, storeId);
-        if (request.getTitle() == null || request.getTitle().isBlank()
-                || request.getContent() == null || request.getContent().isBlank()) {
+        String title = request.getTitle() == null ? "" : request.getTitle().strip();
+        String body = request.getContent() == null ? "" : request.getContent().strip();
+        if (title.isEmpty() || body.isEmpty()) {
             throw ApiException.badRequest("NOTICE_REQUIRED_FIELDS", "제목과 내용을 입력해 주세요");
         }
-        if (request.getContent().trim().length() > CONTENT_MAX) {
+        if (charCount(title) > TITLE_MAX) {
+            throw ApiException.badRequest("NOTICE_TOO_LONG", "공지 제목은 " + TITLE_MAX + "자까지 쓸 수 있어요");
+        }
+        if (charCount(body) > CONTENT_MAX) {
             throw ApiException.badRequest("NOTICE_TOO_LONG", "공지 내용은 " + CONTENT_MAX + "자까지 쓸 수 있어요");
         }
         Notice notice = request.toEntity(store);
         if (notice.getCategory() == null) notice.setCategory(Notice.Category.GENERAL);
-        notice.setTitle(request.getTitle().trim());
-        notice.setContent(request.getContent().trim());
+        notice.setTitle(title);
+        notice.setContent(body);
         noticeRepository.save(notice);
 
         notifier.sendToActiveStaff(store, null, Notification.Type.NOTICE,
@@ -122,7 +127,10 @@ public class NoticeService {
     public NoticeViewDto.ReadStatusResponse readStatus(Integer userId, Integer storeId, Integer noticeId) {
         access.requireOwner(userId, storeId);
         Notice n = find(storeId, noticeId);
-        List<NoticeRead> reads = noticeReadRepository.findByNoticeId(n.getId());
+        Map<Integer, StoreWorker> active = activeStaff(storeId);
+        // 퇴사자 읽음 기록은 빼고 재직 직원만 (read + unread = 대상 직원).
+        List<NoticeRead> reads = noticeReadRepository.findByNoticeId(n.getId()).stream()
+                .filter(r -> active.containsKey(r.getStoreWorker().getId())).toList();
         Set<Integer> readIds = reads.stream().map(r -> r.getStoreWorker().getId()).collect(Collectors.toSet());
         return new NoticeViewDto.ReadStatusResponse(
                 reads.stream().map(r -> new NoticeViewDto.ReadEntry(r.getStoreWorker().getId(), r.getReadAt())).toList(),
@@ -132,7 +140,9 @@ public class NoticeService {
     /** POST /notices/{id}/remind — 사장님. 안 읽은 직원에게 NOTICE "필독 공지를 확인해 주세요", remindedAt=now. */
     public NoticeViewDto.RemindResponse remind(Integer userId, Integer storeId, Integer noticeId) {
         Store store = access.requireOwner(userId, storeId);
-        Notice n = find(storeId, noticeId);
+        // 동시 재알림이 모두 쿨다운을 통과하지 않도록 공지 행을 잠그고 나서 remindedAt 을 본다.
+        Notice n = noticeRepository.findByIdAndStoreIdForUpdate(noticeId, storeId)
+                .orElseThrow(() -> ApiException.notFound("공지를 찾을 수 없어요"));
         if (!n.isRequired()) {
             throw ApiException.conflict("NOT_REQUIRED", "필독 공지만 다시 알릴 수 있어요");
         }
@@ -154,9 +164,12 @@ public class NoticeService {
     private NoticeViewDto.View view(Notice n, Map<Integer, LocalDateTime> readBy, boolean owner, Integer myStaffId,
                                     Map<Integer, StoreWorker> active) {
         if (owner) {
+            // readBy 는 재직 직원만: readBy 수 + unreadCount = 대상 직원 수(가입 전 공지 제외)라서 FE 가 한 비율로 쓸 수 있다.
+            Map<Integer, LocalDateTime> activeReads = new HashMap<>();
+            readBy.forEach((id, at) -> { if (active.containsKey(id)) activeReads.put(id, at); });
             int unreadCount = (int) active.values().stream()
                     .filter(sw -> !readBy.containsKey(sw.getId()) && !beforeJoin(n, sw)).count();
-            return NoticeViewDto.View.from(n, readBy, true, unreadCount);
+            return NoticeViewDto.View.from(n, activeReads, true, unreadCount);
         }
         // FE 계약: readBy 는 항상 맵. 직원에게는 본인 읽음 기록만 준다(다른 직원 읽음 여부는 숨김).
         Map<Integer, LocalDateTime> mine = myStaffId != null && readBy.containsKey(myStaffId)
@@ -165,6 +178,11 @@ public class NoticeService {
         boolean read = !mine.isEmpty() || (myStaffId != null && active.containsKey(myStaffId)
                 && beforeJoin(n, active.get(myStaffId)));
         return NoticeViewDto.View.from(n, mine, read, null);
+    }
+
+    /** 글자 수: 서로게이트 쌍(이모지)을 1자로 센다 — MySQL VARCHAR 길이와 같은 기준. */
+    static int charCount(String s) {
+        return s.codePointCount(0, s.length());
     }
 
     private Notice find(Integer storeId, Integer noticeId) {

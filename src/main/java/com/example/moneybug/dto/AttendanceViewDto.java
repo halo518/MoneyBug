@@ -1,9 +1,19 @@
 package com.example.moneybug.dto;
 
 import com.example.moneybug.entity.Attendance;
+import com.example.moneybug.service.TimeUtil;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import tools.jackson.core.JsonParser;
+import tools.jackson.databind.DeserializationContext;
+import tools.jackson.databind.ValueDeserializer;
+import tools.jackson.databind.annotation.JsonDeserialize;
 
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.TemporalAccessor;
 
 /** 설계서 §3.6 AttendanceDto(계산값 포함) 와 §4.6 요청 본문. */
 public class AttendanceViewDto {
@@ -64,7 +74,35 @@ public class AttendanceViewDto {
 
     /** PATCH .../attendance/{id}, POST .../shifts/{id}/attendance — 사유 필수. */
     public record EditRequest(
-            LocalDateTime clockIn,
-            LocalDateTime clockOut,
-            @NotBlank(message = "수정 사유를 입력해 주세요") String reason) {}
+            @JsonDeserialize(using = KstDateTime.class) LocalDateTime clockIn,
+            @JsonDeserialize(using = KstDateTime.class) LocalDateTime clockOut,
+            @NotBlank(message = "수정 사유를 입력해 주세요")
+            @Size(max = 500, message = "수정 사유는 500자까지 입력할 수 있어요") String reason) {}
+
+    /**
+     * 근태 시각 읽기 규칙: 오프셋 없는 시각은 KST 로 보고, `Z`·`+09:00` 같은 오프셋이 있으면 KST 로 바꾼다.
+     * (기본 LocalDateTime 은 `Z` 를 버리고 `+09:00` 은 거절해서 9시간 어긋났다.)
+     */
+    public static class KstDateTime extends ValueDeserializer<LocalDateTime> {
+        @Override
+        public LocalDateTime deserialize(JsonParser p, DeserializationContext ctxt) {
+            String text = p.getValueAsString();
+            if (text == null) {
+                return (LocalDateTime) ctxt.handleUnexpectedToken(LocalDateTime.class, p);
+            }
+            return parse(text.trim(), ctxt);
+        }
+
+        static LocalDateTime parse(String text, DeserializationContext ctxt) {
+            try {
+                TemporalAccessor t = DateTimeFormatter.ISO_DATE_TIME.parseBest(text,
+                        ZonedDateTime::from, LocalDateTime::from);
+                return t instanceof ZonedDateTime z
+                        ? z.withZoneSameInstant(TimeUtil.KST).toLocalDateTime()
+                        : (LocalDateTime) t;
+            } catch (DateTimeParseException e) {
+                throw ctxt.weirdStringException(text, LocalDateTime.class, "시각 형식이 올바르지 않아요");
+            }
+        }
+    }
 }

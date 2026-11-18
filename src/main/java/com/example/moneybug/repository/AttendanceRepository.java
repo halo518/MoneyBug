@@ -32,8 +32,9 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Integer>
             + "join fetch w.worker join fetch w.store st join fetch st.employer where a.actualEnd is null")
     List<Attendance> findAllOpen();
 
-    /** 내 열린 출근 기록, 전체 매장 기준. */
-    @Query("select a from Attendance a join fetch a.schedule s join fetch s.storeWorker w "
-            + "where w.worker.id = :userId and a.actualEnd is null order by a.actualStart desc")
+    /** 내 열린 출근 기록, 재직(ACTIVE) 중인 전체 매장 기준. 내보낸 매장의 기록은 다른 매장 출근을 막지 않는다. */
+    @Query("select a from Attendance a join fetch a.schedule s join fetch s.storeWorker w join fetch w.store "
+            + "where w.worker.id = :userId and w.status = com.example.moneybug.entity.StoreWorker.Status.ACTIVE "
+            + "and a.actualEnd is null order by a.actualStart desc")
     List<Attendance> findOpenByUser(@Param("userId") Integer userId);
 }

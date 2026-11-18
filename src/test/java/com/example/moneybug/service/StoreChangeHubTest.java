@@ -44,4 +44,23 @@ class StoreChangeHubTest {
         assertTrue(changed(r));
         assertEquals(seq(r), seq(hub.await(Set.of(1), -1)));
     }
+
+    @Test
+    void otherStoresWritesDoNotShowInMySeq() {
+        StoreChangeHub hub = new StoreChangeHub();
+        hub.bump(1);
+        long mine = seq(hub.await(Set.of(1), -1));
+        for (int i = 0; i < 5; i++) hub.bump(2);
+        assertEquals(mine, seq(hub.await(Set.of(1), -1)));
+        assertEquals(0L, seq(hub.await(Set.of(3), -1)), "바뀐 적 없는 매장만 있으면 0");
+    }
+
+    @Test
+    void twoStoresChangedInTheSameMillisecondAreBothSeen() {
+        StoreChangeHub hub = new StoreChangeHub();
+        hub.bump(1);
+        long since = seq(hub.await(Set.of(1, 2), -1));
+        hub.bump(2);
+        assertTrue(changed(hub.await(Set.of(1, 2), since)));
+    }
 }

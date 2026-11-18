@@ -28,6 +28,7 @@ public record StaffDto(
         ContractDto.Response contract,
         List<List<String>> fixedParts,
         List<StaffPrefs.WorkHours> workHours,
+        List<StaffPrefs.WorkHours> availHours,
         List<WageEntry> wages,
         LocalDate leftAt) {
 
@@ -35,20 +36,20 @@ public record StaffDto(
     public record WageEntry(LocalDate from, int wage) {}
 
 
-    /** 사장님·본인이 아닌 사람에게 줄 모습: 연락처·시급·공제·계약서를 뺀다 (FE 는 wage 0, deduction null 을 받는다). */
+    /**
+     * 사장님·본인이 아닌 사람에게 줄 모습: 연락처·시급·공제·계약서·보건증 정보를 뺀다
+     * (FE 는 wage 0, deduction null 을 받는다. 알바생 화면은 동료 보건증을 쓰지 않는다).
+     */
     public StaffDto forViewer(boolean isOwner, Integer viewerUserId) {
         if (isOwner || personId.equals(viewerUserId)) return this;
         UserDto.Response p = person == null ? null : UserDto.Response.builder()
                 .id(person.getId())
                 .name(person.getName())
                 .fullName(person.getFullName())
-                .certExpiry(person.getCertExpiry())
-                .certAlertDays(person.getCertAlertDays())
-                .certHasPhoto(person.isCertHasPhoto())
-                .certDaysLeft(person.getCertDaysLeft())
+                .certAlertDays(List.of()) // FE Person.fromJson 은 certAlertDays 를 null 로 받지 못한다
                 .build();
         return new StaffDto(id, storeId, personId, p, part, kind, 0, null, weeklyHolidayAuto,
-                false, tone, status, joinedAt, requestedAt, null, fixedParts, workHours, List.of(), leftAt);
+                false, tone, status, joinedAt, requestedAt, null, fixedParts, workHours, availHours, List.of(), leftAt);
     }
 
     public static StaffDto from(StoreWorker sw, ContractDto.Response contract) {
@@ -77,6 +78,7 @@ public record StaffDto(
                 contract,
                 StaffPrefs.fixedParts(sw),
                 StaffPrefs.workHours(sw),
+                StaffPrefs.availHours(sw),
                 wageRows.stream().map(w -> new WageEntry(w.getEffectiveFrom(), w.getWage())).toList(),
                 sw.getLeftAt());
     }
