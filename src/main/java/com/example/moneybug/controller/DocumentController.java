@@ -13,7 +13,9 @@ import com.example.moneybug.service.FileStorage;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.multipart.MultipartFile;
 import java.util.Map;
@@ -52,6 +54,34 @@ public class DocumentController {
     public ResponseEntity<byte[]> staffCertPhoto(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
                                                  @PathVariable Integer staffId) {
         return image(documentService.staffCertPhotoPath(userId.intValue(), storeId, staffId));
+    }
+
+    @Operation(summary = "프로필 사진", description = "이미지 바이트. 사진이 없으면 404. "
+            + "권한: 본인, 그 사람이 속한 매장의 사장님, 그 사람이 사장인 매장의 재직·대기 직원, 같은 매장 재직 동료")
+    @GetMapping("/people/{personId}/photo")
+    public ResponseEntity<byte[]> personPhoto(@AuthenticationPrincipal Long userId, @PathVariable Integer personId) {
+        return image(documentService.personPhotoPath(userId.intValue(), personId));
+    }
+
+    @Operation(summary = "내 프로필 사진 올리기", description = "multipart: photo(이미지). 예전 사진은 지워요. 권한: 본인")
+    @PutMapping(value = "/me/photo", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public UserDto.Response uploadPhoto(@AuthenticationPrincipal Long userId,
+                                        @RequestParam(value = "photo", required = false) MultipartFile photo) {
+        return documentService.uploadPhoto(userId.intValue(), photo);
+    }
+
+    @Operation(summary = "내 프로필 사진 지우기", description = "없어도 200. 권한: 본인")
+    @DeleteMapping("/me/photo")
+    public UserDto.Response deletePhoto(@AuthenticationPrincipal Long userId) {
+        return documentService.deletePhoto(userId.intValue());
+    }
+
+    @Operation(summary = "내 프로필 수정", description = "{fullName?, contact?} 보낸 키만 반영. fullName 1~50자, "
+            + "contact 숫자·- 20자 이하(빈 문자열이면 지움). 권한: 본인")
+    @PatchMapping("/me/profile")
+    public UserDto.Response updateProfile(@AuthenticationPrincipal Long userId,
+                                          @RequestBody UserDto.ProfileRequest request) {
+        return documentService.updateProfile(userId.intValue(), request);
     }
 
     @Operation(summary = "서명 이미지 올리기", description = "multipart: image(PNG). {signatureUrl} 를 계약 서명/작성 API 에 넘겨요. 권한: 로그인")

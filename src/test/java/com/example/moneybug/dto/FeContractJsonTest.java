@@ -40,7 +40,8 @@ class FeContractJsonTest {
 
     // models.dart toJson() 키
     private static final Map<String, Set<String>> FE_KEYS = Map.of(
-            "persons", Set.of("id", "name", "fullName", "certExpiry", "certAlertDays", "certHasPhoto"),
+            "persons", Set.of("id", "name", "fullName", "certExpiry", "certAlertDays", "certHasPhoto",
+                    "contact", "hasPhoto", "photoVer"),
             "stores", Set.of("id", "name", "address", "code", "ownerPersonId", "isSmall", "noticeRequiredDefault",
                     "substitutePush", "defaultDeduction", "parts", "monthlyTotals", "scheduleConfirmedAt",
                     "openMin", "closeMin", "weekendOpenMin", "weekendCloseMin", "sizeMode"),
@@ -81,6 +82,12 @@ class FeContractJsonTest {
                 }
             });
         }
+        JsonNode person = json.get("persons").get(1);
+        assertTrue(person.get("hasPhoto").isBoolean());
+        assertTrue(person.get("hasPhoto").asBoolean());
+        assertEquals("abc.jpg", person.get("photoVer").asString());
+        assertEquals("010-1234-5678", person.get("contact").asString());
+        assertTrue(json.get("persons").get(0).get("photoVer").isNull());
         assertTrue(json.get("staff").get(0).get("contract").has("start"));
         assertTrue(json.get("subs").get(0).get("applicantIds").get(0).isString());
         assertTrue(json.get("session").get("ownerStoreId").isString());
@@ -164,6 +171,8 @@ class FeContractJsonTest {
     private AppStateDto.Response sampleState() {
         User owner = user(1, "사장님");
         User taewoo = user(2, "태우");
+        taewoo.setPhotoUrl("profile-photo/2/abc.jpg");
+        taewoo.setContact("010-1234-5678");
         Store store = new Store();
         store.setId(10);
         store.setEmployer(owner);

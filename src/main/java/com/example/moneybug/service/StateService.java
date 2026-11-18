@@ -85,9 +85,10 @@ public class StateService {
                 && draftMonths.contains(YearMonth.from(s.getWorkDate()).toString());
     }
 
-    /** 보건증 필드를 비운 Person (본인·재직 직원의 사장님이 아닌 사람에게). */
+    /** 보건증·연락처 필드를 비운 Person (본인·재직 직원의 사장님이 아닌 사람에게). 프로필 사진 여부는 남긴다. */
     static AppStateDto.Person withoutCert(AppStateDto.Person p) {
-        return new AppStateDto.Person(p.id(), p.name(), p.fullName(), null, List.of(), false);
+        return new AppStateDto.Person(p.id(), p.name(), p.fullName(), null, List.of(), false, null, p.hasPhoto(),
+                p.photoVer());
     }
 
     /** 보건증 필드를 비운 직원 행. FE 는 staff[].person 을 읽지 않지만 응답에 남기지 않는다. */

@@ -127,6 +127,12 @@ public class StoreService {
             }
             store.setStoreName(checkName(request.getStoreName().trim()));
         }
+        if (request.getAddress() != null) {
+            if (request.getAddress().isBlank()) {
+                throw ApiException.badRequest("STORE_REQUIRED_FIELDS", "주소를 입력해 주세요");
+            }
+            store.setAddress(checkAddress(request.getAddress().trim()));
+        }
         if (request.getOpenMin() != null) store.setOpenMin(request.getOpenMin());
         if (request.getCloseMin() != null) store.setCloseMin(request.getCloseMin());
         if (request.getWeekendOpenMin() != null) store.setWeekendOpenMin(request.getWeekendOpenMin());
