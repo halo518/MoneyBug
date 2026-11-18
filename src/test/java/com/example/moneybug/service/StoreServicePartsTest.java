@@ -334,4 +334,25 @@ class StoreServicePartsTest {
         assertEquals(List.of("오픈"), StaffPrefs.fixedParts(worker).get(0));
         assertEquals("오픈", shift.getPart());
     }
+
+    @Test
+    void employeePartRenameAndDeleteReachEmployeesFixedParts() {
+        close.setFlex(true); // 마감 = 직원 파트
+        StoreWorker employee = new StoreWorker();
+        employee.setKind(StoreWorker.Kind.FULLTIME);
+        employee.setPart("직원");
+        StaffPrefs.setFixedParts(employee, List.of(List.of("마감"), List.of(), List.of("마감"), List.of(), List.of(),
+                List.of(), List.of()));
+        when(storeWorkerRepository.findByStoreId(10)).thenReturn(List.of(worker, employee));
+
+        service.savePartList(1, 10, List.of(item("1", "오픈", 480, 720), item("2", "야간", 1020, 1320)));
+        assertEquals(List.of("야간"), StaffPrefs.fixedParts(employee).get(0));
+        assertEquals(List.of("야간"), StaffPrefs.fixedParts(employee).get(2));
+        assertEquals("직원", employee.getPart());
+
+        service.savePartList(1, 10, List.of(item("1", "오픈", 480, 720)));
+        assertEquals(List.of(), StaffPrefs.fixedParts(employee).get(0));
+        assertEquals(List.of(), StaffPrefs.fixedParts(employee).get(2));
+        assertEquals("직원", employee.getPart());
+    }
 }

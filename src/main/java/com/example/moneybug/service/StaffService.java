@@ -148,12 +148,27 @@ public class StaffService {
         if (request.premium() != null) sw.setPremium(request.premium());
         if (request.kind() != null) sw.setKind(request.kind());
         if (request.part() != null) sw.setPart(validPart(storeId, request.part(), sw.getKind()));
-        if (request.fixedParts() != null) {
-            StaffPrefs.setFixedParts(sw, validFixedParts(storeId, request.fixedParts()));
+        boolean employee = !isPartTimer(sw.getKind());
+        List<List<String>> fixed = request.fixedParts() == null ? null
+                : employee ? validEmployeeFixedParts(storeId, request.fixedParts())
+                : validFixedParts(storeId, request.fixedParts());
+        List<StaffPrefs.WorkHours> hours = request.workHours() == null ? null : validWorkHours(request.workHours());
+        if (employee && (fixed != null || hours != null)) {
+            // 보낸 값과 저장된 값을 합쳐 본다. 저장된 고정 파트 중 직원 파트가 아닌 이름은 생성에서 무시하므로 빼고 본다.
+            java.util.Set<String> flexNames = new java.util.HashSet<>();
+            storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
+                    .filter(StorePart::isFlex).forEach(x -> flexNames.add(x.getName()));
+            List<List<String>> f = fixed != null ? fixed : StaffPrefs.fixedParts(sw);
+            List<StaffPrefs.WorkHours> h = hours != null ? hours : StaffPrefs.workHours(sw);
+            for (int i = 0; h != null && i < 7; i++) {
+                if (h.get(i) != null && f.get(i).stream().anyMatch(flexNames::contains)) {
+                    throw ApiException.badRequest("INVALID_FIXED_PARTS",
+                            "같은 요일에 고정 파트와 근무 시간을 함께 정할 수 없어요");
+                }
+            }
         }
-        if (request.workHours() != null) {
-            StaffPrefs.setWorkHours(sw, validWorkHours(request.workHours()));
-        }
+        if (fixed != null) StaffPrefs.setFixedParts(sw, fixed);
+        if (hours != null) StaffPrefs.setWorkHours(sw, hours);
         if (request.availHours() != null) {
             StaffPrefs.setAvailHours(sw, validWorkHours(request.availHours()));
         }
@@ -292,11 +307,38 @@ public class StaffService {
         StorePart found = storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
                 .filter(p -> p.getName().equals(part)).findFirst()
                 .orElseThrow(() -> ApiException.badRequest("INVALID_PART", "매장에 없는 파트예요: " + part));
-        boolean partTimer = kind == null || kind == StoreWorker.Kind.PART_TIMER || kind == StoreWorker.Kind.MINOR;
-        if (partTimer && found.isFlex()) {
+        if (isPartTimer(kind) && found.isFlex()) {
             throw ApiException.badRequest("INVALID_PART", "직원 파트는 알바생의 기본 파트로 정할 수 없어요: " + part);
         }
         return part;
+    }
+
+    private static boolean isPartTimer(StoreWorker.Kind kind) {
+        return kind == null || kind == StoreWorker.Kind.PART_TIMER || kind == StoreWorker.Kind.MINOR;
+    }
+
+    /** 직원 고정 파트: 요일마다 직원 파트 하나까지. */
+    private List<List<String>> validEmployeeFixedParts(Integer storeId, List<List<String>> value) {
+        if (value.size() != 7) throw ApiException.badRequest("INVALID_FIXED_PARTS", "고정 근무는 월~일 7칸이어야 해요");
+        java.util.Map<String, Boolean> flexByName = new java.util.HashMap<>();
+        storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).forEach(p -> flexByName.put(p.getName(), p.isFlex()));
+        List<List<String>> out = new java.util.ArrayList<>();
+        for (List<String> day : value) {
+            List<String> cell = new java.util.ArrayList<>();
+            for (String n : day == null ? List.<String>of() : day) {
+                Boolean flex = n == null ? null : flexByName.get(n);
+                if (flex == null) throw ApiException.badRequest("INVALID_FIXED_PARTS", "매장에 없는 파트예요: " + n);
+                if (!flex) {
+                    throw ApiException.badRequest("INVALID_FIXED_PARTS", "알바 파트는 직원 고정 파트로 정할 수 없어요: " + n);
+                }
+                if (!cell.contains(n)) cell.add(n);
+            }
+            if (cell.size() > 1) {
+                throw ApiException.badRequest("INVALID_FIXED_PARTS", "직원 고정 파트는 하루에 하나만 정할 수 있어요");
+            }
+            out.add(cell);
+        }
+        return out;
     }
 
     private List<List<String>> validFixedParts(Integer storeId, List<List<String>> value) {

@@ -39,19 +39,21 @@ class FixedShiftPlannerTest {
     }
 
     @Test
-    void staffUsesWorkHoursAndSkipsOutsideBusinessHours() {
+    void staffUsesWorkHoursEvenOutsideBusinessHours() {
         List<WorkHours> wh = new ArrayList<>();
         wh.add(new WorkHours(540, 1080));          // 월 9~18 ok
-        wh.add(new WorkHours(420, 900));           // 화 7시 시작 → 영업 전
+        wh.add(new WorkHours(420, 900));           // 화 7시 시작 → 영업 전이어도 그대로
         wh.add(null);                              // 수 쉼
-        wh.add(new WorkHours(480, 1380));          // 목 23시 종료 → 영업 후
+        wh.add(new WorkHours(480, 1380));          // 목 23시 종료 → 영업 후여도 그대로
         wh.add(null); wh.add(new WorkHours(540, 1260)); wh.add(null); // 토 주말 영업시간 9~21 ok
         Person p = new Person(2, false, null, wh);
         List<Planned> out = FixedShiftPlanner.fixedShifts(HOURS, PARTS, List.of(p), days(7));
-        assertEquals(2, out.size());
+        assertEquals(4, out.size());
         assertNull(out.get(0).part());
         assertEquals(60, out.get(0).breakMin());   // 9시간 체류 → 60
-        assertEquals(MON.plusDays(5), out.get(1).date());
+        assertEquals(420, out.get(1).startMin());
+        assertEquals(1380, out.get(2).endMin());
+        assertEquals(MON.plusDays(5), out.get(3).date());
     }
 
     @Test
