@@ -271,4 +271,67 @@ class StoreServicePartsTest {
         r.setAddress("  서울시 강남구 1  ");
         assertEquals("서울시 강남구 1", service.updateSettings(1, 10, r).getAddress());
     }
+
+    private static StorePartDto.Item item(String id, String name, int s, int e, Boolean flex, StorePart.Days days) {
+        return new StorePartDto.Item(id, name, StorePart.Tone.OPEN, s, e, 30, 1, flex, days);
+    }
+
+    @Test
+    void newPartDefaultsToPartTimerAllDaysAndKeepsSentFlexDays() {
+        List<StorePart> saved = new ArrayList<>();
+        when(storePartRepository.save(any(StorePart.class))).thenAnswer(i -> {
+            saved.add(i.getArgument(0));
+            return i.getArgument(0);
+        });
+        service.savePartList(1, 10, List.of(item("1", "오픈", 480, 720), item("2", "마감", 1020, 1320),
+                item("", "저녁", 1100, 1300), item("", "직원오픈", 420, 960, true, StorePart.Days.WEEKEND)));
+        assertEquals(2, saved.size());
+        assertFalse(saved.get(0).isFlex());
+        assertEquals(StorePart.Days.ALL, saved.get(0).getDays());
+        assertTrue(saved.get(1).isFlex());
+        assertEquals(StorePart.Days.WEEKEND, saved.get(1).getDays());
+    }
+
+    @Test
+    void existingPartKeepsFlexAndDaysWhenMissingAndDaysMayChange() {
+        close.setFlex(true);
+        close.setDays(StorePart.Days.WEEKDAY);
+        open.setDays(StorePart.Days.WEEKEND);
+        service.savePartList(1, 10, List.of(item("1", "오픈", 480, 720), item("2", "마감", 1020, 1320)));
+        assertTrue(close.isFlex());
+        assertEquals(StorePart.Days.WEEKDAY, close.getDays());
+        assertEquals(StorePart.Days.WEEKEND, open.getDays());
+
+        service.savePartList(1, 10, List.of(item("1", "오픈", 480, 720, false, StorePart.Days.ALL),
+                item("2", "마감", 1020, 1320, true, StorePart.Days.WEEKEND)));
+        assertEquals(StorePart.Days.ALL, open.getDays());
+        assertEquals(StorePart.Days.WEEKEND, close.getDays());
+        assertTrue(close.isFlex());
+    }
+
+    @Test
+    void changingFlexOfExistingPartIsRejected() {
+        var ex = assertThrows(ApiException.class, () -> service.savePartList(1, 10,
+                List.of(item("1", "오픈", 480, 720, true, null), item("2", "마감", 1020, 1320))));
+        assertEquals("INVALID_PART", ex.getCode());
+        assertFalse(open.isFlex());
+    }
+
+    @Test
+    void reusingDeletedNameInOtherListCountsAsDeleted() {
+        when(storePartRepository.save(any(StorePart.class))).thenAnswer(i -> i.getArgument(0));
+        // 알바 파트 '오픈'을 지우고 같은 이름의 직원 파트를 만들면 알바 고정 근무·기본 파트에서 빠진다.
+        service.savePartList(1, 10, List.of(item("", "오픈", 420, 960, true, null), item("2", "마감", 1020, 1320)));
+        assertEquals(List.of("마감"), StaffPrefs.fixedParts(worker).get(0));
+        assertEquals("", shift.getPart());
+
+        // 같은 목록으로 다시 쓰면 그대로 둔다(기존 규칙).
+        worker.setPart("오픈");
+        StaffPrefs.setFixedParts(worker, List.of(List.of("오픈"), List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of()));
+        shift.setPart("오픈");
+        service.savePartList(1, 10, List.of(item("", "오픈", 420, 960), item("2", "마감", 1020, 1320)));
+        assertEquals(List.of("오픈"), StaffPrefs.fixedParts(worker).get(0));
+        assertEquals("오픈", shift.getPart());
+    }
 }

@@ -8,6 +8,7 @@ import com.example.moneybug.entity.Attendance;
 import com.example.moneybug.entity.Notification;
 import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.entity.Store;
+import com.example.moneybug.entity.StorePart;
 import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.entity.SubstituteApplicant;
 import com.example.moneybug.entity.SubstituteRequest;
@@ -145,8 +146,8 @@ public class StaffService {
         if (request.taxType() != null) sw.setTaxType(request.taxType());
         if (request.weeklyHolidayAuto() != null) sw.setWeeklyHolidayAuto(request.weeklyHolidayAuto());
         if (request.premium() != null) sw.setPremium(request.premium());
-        if (request.part() != null) sw.setPart(validPart(storeId, request.part()));
         if (request.kind() != null) sw.setKind(request.kind());
+        if (request.part() != null) sw.setPart(validPart(storeId, request.part(), sw.getKind()));
         if (request.fixedParts() != null) {
             StaffPrefs.setFixedParts(sw, validFixedParts(storeId, request.fixedParts()));
         }
@@ -284,12 +285,16 @@ public class StaffService {
                 StoreWorker.Status.ACTIVE);
     }
 
-    /** 매장 파트 이름이거나 유동 근무 "직원"(또는 빈 값)만 허용. */
-    private String validPart(Integer storeId, String part) {
+    /** 매장 파트 이름이거나 유동 근무 "직원"(또는 빈 값)만 허용. 알바생은 직원 파트를 기본 파트로 못 쓴다. */
+    private String validPart(Integer storeId, String part, StoreWorker.Kind kind) {
         if (part.isBlank()) return ""; // 공백만 보내면 기본 파트 없음
         if ("직원".equals(part)) return part;
-        if (storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream().noneMatch(p -> p.getName().equals(part))) {
-            throw ApiException.badRequest("INVALID_PART", "매장에 없는 파트예요: " + part);
+        StorePart found = storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
+                .filter(p -> p.getName().equals(part)).findFirst()
+                .orElseThrow(() -> ApiException.badRequest("INVALID_PART", "매장에 없는 파트예요: " + part));
+        boolean partTimer = kind == null || kind == StoreWorker.Kind.PART_TIMER || kind == StoreWorker.Kind.MINOR;
+        if (partTimer && found.isFlex()) {
+            throw ApiException.badRequest("INVALID_PART", "직원 파트는 알바생의 기본 파트로 정할 수 없어요: " + part);
         }
         return part;
     }
@@ -297,11 +302,16 @@ public class StaffService {
     private List<List<String>> validFixedParts(Integer storeId, List<List<String>> value) {
         if (value.size() != 7) throw ApiException.badRequest("INVALID_FIXED_PARTS", "고정 근무는 월~일 7칸이어야 해요");
         java.util.Set<String> names = new java.util.HashSet<>();
-        storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).forEach(p -> names.add(p.getName()));
+        java.util.Set<String> flexNames = new java.util.HashSet<>();
+        storePartRepository.findByStoreIdOrderByStartMinAsc(storeId)
+                .forEach(p -> (p.isFlex() ? flexNames : names).add(p.getName()));
         List<List<String>> out = new java.util.ArrayList<>();
         for (List<String> day : value) {
             List<String> cell = new java.util.ArrayList<>();
             for (String n : day == null ? List.<String>of() : day) {
+                if (flexNames.contains(n)) {
+                    throw ApiException.badRequest("INVALID_FIXED_PARTS", "직원 파트는 알바 고정 파트로 정할 수 없어요: " + n);
+                }
                 if (n == null || !names.contains(n)) {
                     throw ApiException.badRequest("INVALID_FIXED_PARTS", "매장에 없는 파트예요: " + n);
                 }

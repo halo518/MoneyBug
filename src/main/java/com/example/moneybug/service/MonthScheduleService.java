@@ -661,7 +661,7 @@ public class MonthScheduleService {
                 .map(s -> s.getStoreWorker().getId() + "|" + s.getWorkDate()).collect(Collectors.toSet());
         List<GapFiller.PartNeed> needs = partRepo.findByStoreIdOrderByStartMinAsc(storeId).stream()
                 .map(x -> new GapFiller.PartNeed(x.getName(), x.getStartMin(), x.getEndMin(),
-                        x.getNeed() == null ? 1 : x.getNeed())).toList();
+                        x.getNeed() == null ? 1 : x.getNeed(), x.getBreakMin(), x.isFlex(), x.getDays())).toList();
         // 맥락 근무(결과에는 안 들어감): 첫 대상일이 주 중간이면 그 주 월요일~전날의 기존 근무(지난달 말 포함),
         // 그리고 대상일의 출근 기록 있는 근무(적용해도 안 지워짐). 연차·휴무 제외.
         LocalDate monday = dates.get(0).with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
@@ -734,7 +734,9 @@ public class MonthScheduleService {
     private Ctx ctx(Store store) {
         StoreHours hours = new StoreHours(store.getOpenMin(), store.getCloseMin(),
                 store.getWeekendOpenMin(), store.getWeekendCloseMin());
+        // 알바 고정 근무는 알바 파트만(직원 파트는 GapFiller 가 채운다).
         List<PartDef> parts = partRepo.findByStoreIdOrderByStartMinAsc(store.getId()).stream()
+                .filter(p -> !p.isFlex())
                 .map(p -> new PartDef(p.getName(), p.getStartMin(), p.getEndMin(), p.getBreakMin())).toList();
         Map<Integer, StoreWorker> workers = activeWorkers(store.getId());
         List<Person> people = workers.values().stream().map(MonthScheduleService::person).toList();

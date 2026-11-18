@@ -26,6 +26,21 @@ public class StorePart {
         public static Tone fromJson(String v) { return EnumJson.parse(Tone.class, v); }
     }
 
+    /** 파트가 쓰이는 날. WEEKEND = 토·일·공휴일, WEEKDAY = 그 밖의 날. */
+    public enum Days {
+        ALL, WEEKDAY, WEEKEND;
+
+        @com.fasterxml.jackson.annotation.JsonValue
+        public String json() { return EnumJson.camel(this); }
+
+        @com.fasterxml.jackson.annotation.JsonCreator
+        public static Days fromJson(String v) { return EnumJson.parse(Days.class, v); }
+
+        public boolean appliesOn(java.time.LocalDate d) {
+            return this == ALL || (this == WEEKEND) == com.example.moneybug.util.Holidays.isWeekendOrHoliday(d);
+        }
+    }
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "part_id")
@@ -56,6 +71,21 @@ public class StorePart {
     public Tone getTone() { return tone == null ? Tone.MIDDLE : tone; }
 
     public int getBreakMin() { return breakMin == null ? 0 : breakMin; }
+
+    // true = 직원 파트, false = 알바 파트. 기존 행은 null 이라 false.
+    @Column(name = "flex")
+    private Boolean flex = false;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "days", length = 10)
+    private Days days = Days.ALL;
+
+    public boolean isFlex() { return Boolean.TRUE.equals(flex); }
+
+    public Days getDays() { return days == null ? Days.ALL : days; }
+
+    /** 그날 이 파트의 필요 인원이 적용되는지. */
+    public boolean appliesOn(java.time.LocalDate d) { return getDays().appliesOn(d); }
 
     // 그 파트의 하루 필요 인원
     @Column(nullable = false)
