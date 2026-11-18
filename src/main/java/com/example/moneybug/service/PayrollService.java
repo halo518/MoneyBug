@@ -11,11 +11,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -38,72 +37,71 @@ public class PayrollService {
         if (!access.isOwner(store, userId) && !sw.getWorker().getId().equals(userId)) {
             throw ApiException.forbidden("사장님 또는 본인만 급여명세를 볼 수 있어요");
         }
-        return calculator.calculate(store, sw, month, projected, TimeUtil.now());
+        return calculator.calculate(store, sw, validMonth(month.getYear(), month.getMonthValue()), projected,
+                TimeUtil.now());
     }
 
     /**
-     * GET /labor-cost — 과거 확정 월은 저장된 값(Payroll), 그 외는 status != PENDING 직원 전원의 gross 합.
-     * (거절된 직원은 근무가 없으므로 제외)
+     * GET /labor-cost — status != PENDING 직원 전원의 gross 합. 지난 달(확정 조회)은 저장된 정산(Payroll)이 있는 직원은 그 값,
+     * 없는 직원은 계산 값. (거절된 직원은 근무가 없으므로 제외)
      */
     public LaborCostDto.Response laborCost(Integer userId, Integer storeId, int year, int month, boolean projected) {
         Store store = access.requireOwner(userId, storeId);
-        YearMonth ym;
-        try {
-            ym = YearMonth.of(year, month);
-        } catch (DateTimeException e) {
-            throw ApiException.badRequest("INVALID_MONTH", "연·월이 올바르지 않아요");
-        }
-
-        if (!projected && ym.isBefore(YearMonth.from(TimeUtil.today()))) {
-            List<Payroll> stored = payrollRepository.findByStoreWorkerStoreIdAndPayrollMonth(storeId, ym.toString());
-            if (!stored.isEmpty()) {
-                List<LaborCostDto.ByStaff> byStaff = stored.stream()
-                        .map(p -> new LaborCostDto.ByStaff(p.getStoreWorker().getId(), storedGross(p)))
-                        .toList();
-                long total = byStaff.stream().mapToLong(LaborCostDto.ByStaff::gross).sum();
-                return new LaborCostDto.Response(year, month, total, byStaff);
-            }
-        }
-
-        List<LaborCostDto.ByStaff> byStaff = computeByStaff(store, storeId, ym, projected);
+        YearMonth ym = validMonth(year, month);
+        List<LaborCostDto.ByStaff> byStaff = byStaff(store, ym, projected, TimeUtil.now());
         long total = byStaff.stream().mapToLong(LaborCostDto.ByStaff::gross).sum();
         return new LaborCostDto.Response(year, month, total, byStaff);
     }
 
-    private List<LaborCostDto.ByStaff> computeByStaff(Store store, Integer storeId, YearMonth ym, boolean projected) {
-        LocalDateTime now = TimeUtil.now();
-        List<LaborCostDto.ByStaff> byStaff = new ArrayList<>();
-        for (StoreWorker sw : storeWorkerRepository.findByStoreIdAndStatusIn(storeId,
-                List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.LEFT))) {
-            byStaff.add(new LaborCostDto.ByStaff(sw.getId(), calculator.calculate(store, sw, ym, projected, now).gross()));
+    /** 연도 2000~2100, 월 1~12 만 받는다. */
+    private static YearMonth validMonth(int year, int month) {
+        if (year < 2000 || year > 2100 || month < 1 || month > 12) {
+            throw ApiException.badRequest("INVALID_MONTH", "연·월이 올바르지 않아요");
         }
+        return YearMonth.of(year, month);
+    }
+
+    /** 직원별 그 달 gross. /labor-cost·/trend 가 같은 규칙을 쓴다. */
+    private List<LaborCostDto.ByStaff> byStaff(Store store, YearMonth ym, boolean projected, LocalDateTime now) {
+        Map<Integer, Integer> stored = new LinkedHashMap<>();
+        if (!projected && ym.isBefore(YearMonth.from(now))) {
+            for (Payroll p : payrollRepository.findByStoreWorkerStoreIdAndPayrollMonth(store.getId(), ym.toString())) {
+                stored.put(p.getStoreWorker().getId(), storedGross(p));
+            }
+        }
+        List<LaborCostDto.ByStaff> byStaff = new ArrayList<>();
+        for (StoreWorker sw : storeWorkerRepository.findByStoreIdAndStatusIn(store.getId(),
+                List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.LEFT))) {
+            Integer fixed = stored.remove(sw.getId());
+            byStaff.add(new LaborCostDto.ByStaff(sw.getId(),
+                    fixed != null ? fixed : calculator.calculate(store, sw, ym, projected, now).gross()));
+        }
+        stored.forEach((id, gross) -> byStaff.add(new LaborCostDto.ByStaff(id, gross))); // 대기 등 목록 밖 직원의 저장 행
         return byStaff;
     }
 
-    /** GET /labor-cost/trend?months= — 지난달부터 거슬러 올라가는 월별 합계. 확정(저장)된 달은 그 값, 아니면 근무·출근 기록으로 계산. */
+    /** 그 달 매장 인건비(확정 조회). /trend 와 같은 값. */
+    public long monthTotal(Store store, YearMonth ym) {
+        return byStaff(store, ym, false, TimeUtil.now()).stream().mapToLong(LaborCostDto.ByStaff::gross).sum();
+    }
+
+    /** GET /labor-cost/trend?months= — 지난달부터 거슬러 올라가는 월별 합계. /labor-cost 확정 조회와 같은 값. */
     public LaborCostDto.TrendResponse trend(Integer userId, Integer storeId, int months) {
         Store store = access.requireOwner(userId, storeId);
         if (months < 1 || months > 24) {
             throw ApiException.badRequest("INVALID_MONTHS", "months 는 1~24 사이여야 해요");
         }
         YearMonth current = YearMonth.from(TimeUtil.today());
-        Map<String, Long> stored = new HashMap<>();
-        for (Object[] row : payrollRepository.sumGrossByMonthBefore(storeId, current.toString())) {
-            stored.put((String) row[0], row[1] == null ? 0L : ((Number) row[1]).longValue());
-        }
         List<LaborCostDto.MonthTotal> items = new ArrayList<>();
         for (int i = months; i >= 1; i--) {
-            String key = current.minusMonths(i).toString();
-            Long fixed = stored.get(key);
-            long total = fixed != null ? fixed
-                    : computeByStaff(store, storeId, current.minusMonths(i), false).stream()
-                            .mapToLong(LaborCostDto.ByStaff::gross).sum();
-            items.add(new LaborCostDto.MonthTotal(key, total));
+            YearMonth ym = current.minusMonths(i);
+            items.add(new LaborCostDto.MonthTotal(ym.toString(), monthTotal(store, ym)));
         }
         return new LaborCostDto.TrendResponse(items);
     }
 
-    private static int storedGross(Payroll p) {
+    /** 저장된 정산의 총액. gross_pay 가 비어 있으면(0) 실지급+공제. PayrollRepository.sumGrossByMonthBefore 와 같은 규칙. */
+    static int storedGross(Payroll p) {
         if (p.getGrossPay() != null && p.getGrossPay() > 0) return p.getGrossPay();
         int deduction = p.getDeductionAmount() != null ? p.getDeductionAmount() : 0;
         return p.getFinalSalary() + deduction;

@@ -67,8 +67,9 @@ public final class TimeUtil {
         return d.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
     }
 
-    /** round(분 x 시급 / 60) */
+    /** round(분 x 시급 / 60). int 범위로 포화한다(비현실적 시급에서 오버플로로 부호가 뒤집히지 않게). */
     public static int pay(long minutes, int hourlyWage) {
-        return (int) Math.round(minutes * (double) hourlyWage / 60.0);
+        long v = Math.round(minutes * (double) hourlyWage / 60.0);
+        return (int) Math.max(Integer.MIN_VALUE, Math.min(Integer.MAX_VALUE, v));
     }
 }
