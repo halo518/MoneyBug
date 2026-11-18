@@ -79,4 +79,14 @@ class AiLaborServiceTest {
         assertEquals("AI_RATE_LIMIT", e.getCode());
         assertEquals(429, e.getStatus().value());
     }
+
+    @Test
+    void questionLengthCountsCharactersLikeFe() {
+        // 이모지·가족 이모지(ZWJ)도 FE 처럼 1자. 1000자는 통과(키 없음 503), 1001자는 한국어 400.
+        assertEquals(1000, AiLaborService.length("😀".repeat(500) + "👨‍👩‍👧".repeat(500)));
+        assertEquals("AI_DISABLED", assertThrows(ApiException.class, () -> svc("").ask(1, 1, "😀".repeat(1000))).getCode());
+        ApiException e = assertThrows(ApiException.class, () -> svc("").ask(1, 1, "가".repeat(1001)));
+        assertEquals("QUESTION_TOO_LONG", e.getCode());
+        assertEquals("질문은 1000자까지 쓸 수 있어요", e.getMessage());
+    }
 }

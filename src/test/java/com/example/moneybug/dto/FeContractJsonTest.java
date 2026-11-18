@@ -45,7 +45,7 @@ class FeContractJsonTest {
                     "substitutePush", "defaultDeduction", "parts", "monthlyTotals", "scheduleConfirmedAt",
                     "openMin", "closeMin", "weekendOpenMin", "weekendCloseMin", "sizeMode"),
             "staff", Set.of("id", "storeId", "personId", "part", "wage", "deduction", "weeklyHolidayAuto", "premium",
-                    "tone", "kind", "joinedAt", "status", "requestedAt", "contract", "fixedParts", "workHours", "wages", "leftAt"),
+                    "tone", "kind", "joinedAt", "status", "requestedAt", "contract", "fixedParts", "workHours", "availHours", "wages", "leftAt"),
             "shifts", Set.of("id", "storeId", "staffId", "date", "startMin", "endMin", "part", "breakMin",
                     "isSubstitute", "originalStaffId", "kind", "timeTbd"),
             "attendance", Set.of("id", "storeId", "shiftId", "staffId", "clockIn", "clockOut", "editReason"),
@@ -102,6 +102,8 @@ class FeContractJsonTest {
         assertEquals(10320, staff.get("wages").get(1).get("wage").asInt());
         assertEquals(600, staff.get("workHours").get(1).get("startMin").asInt());
         assertTrue(staff.get("workHours").get(2).isNull());
+        assertEquals(7, staff.get("availHours").size());
+        assertTrue(staff.get("availHours").get(0).isNull()); // 저장 안 했으면 7칸 null
         JsonNode ms = json.get("schedules").get(0);
         assertEquals("draft", ms.get("status").asString());
         assertEquals("ai", ms.get("source").asString());

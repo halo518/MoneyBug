@@ -20,6 +20,6 @@ public class DashboardDto {
             int pendingJoinRequests,
             List<CertAlert> certAlerts,
             /** 서명이 끝나지 않은 직원(StoreWorker id) */
-            List<Integer> unsignedContracts,
+            List<String> unsignedContracts,
             long unreadNotificationCount) {}
 }

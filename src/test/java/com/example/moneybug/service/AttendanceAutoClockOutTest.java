@@ -65,7 +65,7 @@ class AttendanceAutoClockOutTest {
 
         job.run(end.plusHours(1));
         job.run(end.plusHours(2));
-        verify(notifier, times(1)).sendToOwner(any(), eq(Notification.Type.SUB), eq("퇴근 기록이 없어요"), any(), eq(7));
+        verify(notifier, times(1)).sendToOwner(any(), eq(Notification.Type.PAY), eq("퇴근 기록이 없어요"), any(), eq(7));
         assertNotNull(a.getMissingOutNotifiedAt());
         assertNull(a.getActualEnd());
     }
@@ -75,9 +75,17 @@ class AttendanceAutoClockOutTest {
         job.run(end.plusHours(4));
         assertEquals(end, a.getActualEnd());
         assertEquals(AttendanceAutoClockOut.AUTO_REASON, a.getEditReason());
-        verify(notifier).sendToOwner(any(), any(), eq("퇴근이 자동 처리됐어요"), any(), eq(7));
+        verify(notifier).sendToOwner(any(), eq(Notification.Type.PAY), eq("퇴근이 자동 처리됐어요"), any(), eq(7));
         verify(notifier).sendToStaff(any(), any(), any(), eq("퇴근이 자동 처리됐어요"), any(), eq(7));
         verify(hub).bump(1);
+    }
+
+    @Test
+    void autoClockOutKeepsOwnerReason() {
+        a.setEditReason("출근 태깅 누락");
+        job.run(end.plusHours(4));
+        assertEquals(end, a.getActualEnd());
+        assertEquals("출근 태깅 누락", a.getEditReason());
     }
 
     @Test

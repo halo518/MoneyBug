@@ -95,4 +95,18 @@ class ScheduleInsightsTest {
         var s = ScheduleInsights.summarize(NOV, List.of(), List.of(), gaps, HolidayPolicy.ALLOW, Priority.FAIRNESS);
         assertEquals("직원이 부족해 5칸을 못 채웠어요: 11/3 오픈 11/4 마감 11/5 오픈 외 1칸", s.lines().get(3));
     }
+
+    @Test
+    void minorLimitsWarned() {
+        // 연소자 하루 8시간(휴게 60)×5일 = 주 40시간 → 하루·주 경고 둘 다.
+        var shifts = new java.util.ArrayList<FixedShiftPlanner.Planned>();
+        for (int i = 0; i < 5; i++) shifts.add(new FixedShiftPlanner.Planned(1, LocalDate.of(2026, 11, 2).plusDays(i), 540, 1080, "종일", 60));
+        var s = ScheduleInsights.summarize(NOV, shifts, List.of(new StaffInfo(1, "가", true, 10000, true)), List.of(),
+                HolidayPolicy.ALLOW, Priority.FAIRNESS);
+        assertTrue(s.lines().contains("가님은 연소자라 22시~6시 근무와 하루 7시간 넘는 근무를 할 수 없어요"), s.lines().toString());
+        assertTrue(s.lines().contains("가님 11/2주 40시간이에요. 연소자는 주 35시간까지예요"), s.lines().toString());
+        var adult = ScheduleInsights.summarize(NOV, shifts, List.of(new StaffInfo(1, "가", true, 10000)), List.of(),
+                HolidayPolicy.ALLOW, Priority.FAIRNESS);
+        assertTrue(adult.lines().stream().noneMatch(l -> l.contains("연소자")));
+    }
 }

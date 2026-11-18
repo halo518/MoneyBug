@@ -12,6 +12,7 @@ import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.repository.AttendanceRepository;
 import com.example.moneybug.repository.ScheduleRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
+import com.example.moneybug.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -40,6 +42,8 @@ public class AttendanceService {
     static final int MAX_WORK_HOURS = 24;
     /** 서버·기기 시각 오차 허용(분). */
     private static final int FUTURE_SLACK_MINUTES = 1;
+    /** 사장님이 입력하는 출퇴근 시각은 [소정 시작 − 이 시간, 소정 종료 + CLOCK_OUT_GRACE_HOURS] 안이어야 한다. */
+    static final int MANUAL_BEFORE_START_HOURS = 2;
 
     private final AttendanceRepository attendanceRepository;
     private final ScheduleRepository scheduleRepository;
@@ -48,6 +52,7 @@ public class AttendanceService {
     private final StaffAssembler staffAssembler;
     private final NotificationPublisher notifier;
     private final QrTokenService qrTokens;
+    private final UserRepository userRepository;
 
     /**
      * POST .../shifts/{shiftId}/clock-in
@@ -57,6 +62,7 @@ public class AttendanceService {
      */
     public AttendanceViewDto.View clockIn(Integer userId, Integer storeId, Integer shiftId,
                                           AttendanceViewDto.ClockInRequest request) {
+        lockUser(userId); // 다른 근무 동시 출근 직렬화: 열린 출근 기록은 1개만
         StoreWorker me = access.requireActiveStaff(userId, storeId);
         if (request == null || !qrTokens.verify(storeId, request.qrToken(), Instant.now())) {
             throw ApiException.badRequest("INVALID_QR", "QR 코드가 만료됐거나 다른 매장 QR이에요");
@@ -70,7 +76,7 @@ public class AttendanceService {
             throw ApiException.conflict("NOT_WORK_SHIFT", "연차·휴무·시간 미정 근무는 출근할 수 없어요");
         }
 
-        LocalDateTime now = TimeUtil.now();
+        LocalDateTime now = now();
         var existing = attendanceRepository.findByScheduleId(shift.getId());
         if (existing.isPresent()) {
             if (existing.get().getActualEnd() != null) {
@@ -78,15 +84,13 @@ public class AttendanceService {
             }
             return AttendanceCalc.view(existing.get(), now);
         }
-        if (!attendanceRepository.findOpenByUser(userId).isEmpty()) {
-            throw ApiException.conflict("ALREADY_CLOCKED_IN", "퇴근하지 않은 근무가 있어요. 먼저 퇴근해 주세요");
-        }
         if (now.isAfter(TimeUtil.end(shift))) {
             throw ApiException.conflict("SHIFT_ENDED", "근무 시간이 지나 출근할 수 없어요");
         }
         if (now.isBefore(TimeUtil.start(shift).minusMinutes(CLOCK_IN_EARLY_MINUTES))) {
             throw ApiException.conflict("TOO_EARLY", "근무 시작 30분 전부터 출근할 수 있어요");
         }
+        requireNoOpen(userId);
 
         Attendance a = new Attendance();
         a.setSchedule(shift);
@@ -107,10 +111,11 @@ public class AttendanceService {
 
     /** POST .../attendance/clock-out — 내 열린 출근 기록(clockOut == null)에 퇴근 기록. 없으면 404. */
     public AttendanceViewDto.View clockOut(Integer userId, Integer storeId) {
+        lockUser(userId); // 동시 퇴근: 첫 요청만 닫고 나머지는 404
         access.requireActiveStaff(userId, storeId);
         Attendance a = attendanceRepository.findOpenByUserAndStore(userId, storeId).stream().findFirst()
                 .orElseThrow(() -> ApiException.notFound("퇴근할 출근 기록이 없어요"));
-        LocalDateTime now = TimeUtil.now();
+        LocalDateTime now = now();
         if (now.isAfter(TimeUtil.end(a.getSchedule()).plusHours(CLOCK_OUT_GRACE_HOURS))) {
             throw ApiException.conflict("CLOCK_OUT_EXPIRED",
                     "퇴근 가능 시간이 지났어요. 사장님께 근태 수정을 요청해 주세요");
@@ -165,10 +170,11 @@ public class AttendanceService {
         Attendance a = find(storeId, attendanceId);
         requireReason(request.reason());
 
-        LocalDateTime clockIn = request.clockIn() != null ? request.clockIn() : a.getActualStart();
-        LocalDateTime clockOut = request.clockOut() != null ? request.clockOut() : a.getActualEnd();
+        LocalDateTime clockIn = request.clockIn() != null ? micros(request.clockIn()) : a.getActualStart();
+        LocalDateTime clockOut = request.clockOut() != null ? micros(request.clockOut()) : a.getActualEnd();
         requireOrder(clockIn, clockOut);
         requireNotFuture(clockIn, clockOut);
+        requireNearShift(a.getSchedule(), request.clockIn(), request.clockOut());
 
         a.setActualStart(clockIn);
         a.setActualEnd(clockOut);
@@ -193,16 +199,32 @@ public class AttendanceService {
         if (!shift.isWork()) {
             throw ApiException.conflict("NOT_WORK_SHIFT", "연차·휴무·시간 미정 근무에는 근태를 만들 수 없어요");
         }
+        LocalDateTime now = TimeUtil.now();
+        if (now.isBefore(TimeUtil.start(shift).minusMinutes(CLOCK_IN_EARLY_MINUTES))) {
+            throw ApiException.conflict("SHIFT_NOT_STARTED", "아직 시작하지 않은 근무에는 근태를 만들 수 없어요");
+        }
+        if (request.clockOut() == null && now.isAfter(TimeUtil.end(shift))) {
+            throw ApiException.badRequest("CLOCK_OUT_REQUIRED", "이미 끝난 근무예요. 퇴근 시각도 입력해 주세요");
+        }
+        LocalDateTime clockIn = micros(request.clockIn());
+        LocalDateTime clockOut = request.clockOut() == null ? null : micros(request.clockOut());
+        requireOrder(clockIn, clockOut);
+        requireNotFuture(clockIn, clockOut);
+        requireNearShift(shift, clockIn, clockOut);
+        if (clockOut == null) {
+            // 근무 중 기록을 만들면 그 직원의 열린 출근 기록이 하나 늘어난다 → 출근과 같은 규칙
+            Integer workerId = shift.getStoreWorker().getWorker().getId();
+            lockUser(workerId);
+            requireNoOpen(workerId);
+        }
         if (attendanceRepository.existsByScheduleId(shift.getId())) {
             throw ApiException.conflict("ATTENDANCE_EXISTS", "이미 출근 기록이 있는 근무예요");
         }
-        requireOrder(request.clockIn(), request.clockOut());
-        requireNotFuture(request.clockIn(), request.clockOut());
 
         Attendance a = new Attendance();
         a.setSchedule(shift);
-        a.setActualStart(request.clockIn());
-        a.setActualEnd(request.clockOut());
+        a.setActualStart(clockIn);
+        a.setActualEnd(clockOut);
         a.setCheckMethod(Attendance.CheckMethod.MANUAL);
         a.setEditReason(request.reason().trim());
         a.setOvertimeMinutes(AttendanceCalc.overtimeMinutes(shift, a));
@@ -233,8 +255,46 @@ public class AttendanceService {
                 .collect(Collectors.toMap(a -> a.getSchedule().getId(), Function.identity()));
         Schedule next = mine.stream().filter(s -> !done.containsKey(s.getId())).findFirst()
                 .orElse(mine.isEmpty() ? null : mine.get(mine.size() - 1));
-        return new MeDto.Today(next == null ? null : ScheduleDto.Response.from(next), false,
-                next != null && done.containsKey(next.getId()) ? AttendanceCalc.view(done.get(next.getId()), now) : null);
+        // 여기까지 왔으면 열린 기록이 없다(퇴근한 기록은 openAttendance 가 아니다).
+        return new MeDto.Today(next == null ? null : ScheduleDto.Response.from(next), false, null);
+    }
+
+    private void lockUser(Integer userId) {
+        userRepository.findByIdForUpdate(userId);
+    }
+
+    /** 재직 중인 매장 어디든 열린 출근 기록이 있으면 409. 메시지에 그 매장 이름을 넣는다. */
+    private void requireNoOpen(Integer userId) {
+        var open = attendanceRepository.findOpenByUser(userId).stream().findFirst();
+        if (open.isPresent()) {
+            String store = open.get().getSchedule().getStoreWorker().getStore().getStoreName();
+            throw ApiException.conflict("ALREADY_CLOCKED_IN",
+                    "'" + store + "'에서 퇴근하지 않은 근무가 있어요. 먼저 그 매장에서 퇴근해 주세요");
+        }
+    }
+
+    /** 서버 시각. DB(datetime(6))와 같은 마이크로초로 잘라 첫 응답과 이후 응답이 같게 한다. */
+    private static LocalDateTime now() {
+        return micros(TimeUtil.now());
+    }
+
+    private static LocalDateTime micros(LocalDateTime t) {
+        return t.truncatedTo(ChronoUnit.MICROS);
+    }
+
+    /** 사장님이 입력한 시각이 근무 시간대 근처인지 (엉뚱한 날짜·자정 이후 시각을 같은 날로 보낸 입력 방지). */
+    static void requireNearShift(Schedule shift, LocalDateTime clockIn, LocalDateTime clockOut) {
+        LocalDateTime from = TimeUtil.start(shift).minusHours(MANUAL_BEFORE_START_HOURS);
+        LocalDateTime to = TimeUtil.end(shift).plusHours(CLOCK_OUT_GRACE_HOURS);
+        String range = TimeUtil.label(shift);
+        if (clockIn != null && (clockIn.isBefore(from) || clockIn.isAfter(to))) {
+            throw ApiException.badRequest("CLOCK_OUT_OF_SHIFT",
+                    "출근 시각이 근무(" + range + ")와 너무 멀어요. 날짜를 확인해 주세요");
+        }
+        if (clockOut != null && (clockOut.isBefore(from) || clockOut.isAfter(to))) {
+            throw ApiException.badRequest("CLOCK_OUT_OF_SHIFT",
+                    "퇴근 시각이 근무(" + range + ")와 너무 멀어요. 날짜를 확인해 주세요");
+        }
     }
 
     private Attendance find(Integer storeId, Integer attendanceId) {

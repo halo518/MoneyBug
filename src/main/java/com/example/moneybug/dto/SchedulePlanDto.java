@@ -15,9 +15,10 @@ public class SchedulePlanDto {
             @NotNull LocalDate to,
             /** 파트별 필요 인원 (store.parts 순서) */
             @NotNull List<Integer> needs,
-            boolean copyLastWeek,
+            /** 생략하면 false */
+            Boolean copyLastWeek,
             /** 이번 배정에서 뺄 직원(StoreWorker id) */
-            List<Integer> excludeStaffIds,
+            List<@NotNull(message = "제외할 직원 id 가 비어 있어요") Integer> excludeStaffIds,
             /** 주 최대 근무 분 (생략 시 2400 = 40시간) */
             @Min(1) Integer weeklyMaxMin) {}
 

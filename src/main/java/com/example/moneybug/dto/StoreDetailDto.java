@@ -72,8 +72,8 @@ public class StoreDetailDto {
     /** GET /stores/{id}/code */
     public record CodeResponse(String code) {}
 
-    /** PUT /stores/{id}/parts/needs — store.parts 순서대로의 필요 인원. 인덱스가 모자라면 무시. */
-    public record PartNeedsRequest(@jakarta.validation.constraints.NotNull List<Integer> needs) {}
+    /** PUT /stores/{id}/parts/needs — store.parts 순서대로의 필요 인원(0~99). 개수는 파트 수와 같아야 한다. */
+    public record PartNeedsRequest(@jakarta.validation.constraints.NotNull List<Integer> needs) {} // 원소 검사는 StoreService.applyNeeds(INVALID_NEED)
 
     /** POST /stores/join-requests 요청 */
     public record JoinRequest(@jakarta.validation.constraints.NotBlank String code) {}

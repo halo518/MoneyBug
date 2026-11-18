@@ -13,6 +13,9 @@ import java.util.List;
  */
 public final class FixedShiftPlanner {
 
+    /** 연소자: 06:00~22:00, 하루 7시간. GapFiller 와 같은 기준. */
+    static final int MINOR_FROM = 360, MINOR_TO = 1320, MINOR_DAY_MIN = 420;
+
     private FixedShiftPlanner() {}
 
     /** 영업시간(분). 마감이 1440 을 넘으면 익일. */
@@ -25,8 +28,35 @@ public final class FixedShiftPlanner {
 
     public record WorkHours(int startMin, int endMin) {}
 
-    /** partTimer=true 면 알바생(fixedParts 사용), 아니면 직원(workHours 사용). 리스트는 월~일 7칸, 없으면 null. */
-    public record Person(int id, boolean partTimer, List<List<String>> fixedParts, List<WorkHours> workHours) {}
+    /**
+     * partTimer=true 면 알바생(fixedParts 사용), 아니면 직원(workHours 사용). 리스트는 월~일 7칸, 없으면 null.
+     * availHours: 알바생이 고정 파트 밖에 추가로 일할 수 있는 요일별 시간(빈칸 채우기 후보 범위).
+     * minor: 연소 근로자(1일 7시간·주 35시간, 22:00~06:00 금지).
+     */
+    public record Person(int id, boolean partTimer, List<List<String>> fixedParts, List<WorkHours> workHours,
+                         List<WorkHours> availHours, boolean minor) {
+        public Person(int id, boolean partTimer, List<List<String>> fixedParts, List<WorkHours> workHours) {
+            this(id, partTimer, fixedParts, workHours, null, false);
+        }
+
+        public Person(int id, boolean partTimer, List<List<String>> fixedParts, List<WorkHours> workHours,
+                      List<WorkHours> availHours) {
+            this(id, partTimer, fixedParts, workHours, availHours, false);
+        }
+
+        /** 고정 시간 없는 직원: 하루 종일 빈칸 후보. */
+        public boolean flex() {
+            return !partTimer && (workHours == null || workHours.stream().allMatch(w -> w == null));
+        }
+
+        /** 그 날 [s,e] 근무를 맡을 수 있는 시간인지(flex 직원은 항상, 알바생은 availHours 안일 때). */
+        public boolean availableFor(LocalDate date, int s, int e) {
+            if (flex()) return true;
+            if (!partTimer) return false;
+            WorkHours w = at(availHours, date.getDayOfWeek().getValue() - 1);
+            return w != null && w.startMin() <= s && w.endMin() >= e;
+        }
+    }
 
     /** part == null 이면 직원 유동 근무. */
     public record Planned(int staffId, LocalDate date, int startMin, int endMin, String part, int breakMin) {}
@@ -57,10 +87,34 @@ public final class FixedShiftPlanner {
                 if (p.partTimer()) {
                     List<String> names = at(p.fixedParts(), dow);
                     if (names == null) continue;
+                    int dayWork = 0; // 연소자 하루 7시간 판단용
                     for (PartDef part : sorted) {
-                        if (names.contains(part.name())) {
-                            out.add(new Planned(p.id(), date, part.startMin(), part.endMin(), part.name(), part.breakMin()));
+                        if (!names.contains(part.name())) continue;
+                        // 그날 영업시간으로 자른다. 잘렸으면 휴게도 잘린 길이로 다시 정한다.
+                        int s = Math.max(part.startMin(), hours.open(date)), e = Math.min(part.endMin(), hours.close(date));
+                        if (e <= s) {
+                            // 새벽 파트: 전날 야간 영업(마감 > 1440)의 이어지는 구간과 다시 자른다.
+                            LocalDate prev = date.minusDays(1);
+                            s = Math.max(part.startMin(), hours.open(prev) - 1440);
+                            e = Math.min(part.endMin(), hours.close(prev) - 1440);
                         }
+                        if (e <= s) continue;
+                        if (p.minor()) {
+                            // 연소자(근로기준법 제69·70조): 06:00~22:00 안으로, 하루 실근로 7시간까지 자른다.
+                            s = Math.max(s, MINOR_FROM);
+                            e = Math.min(e, MINOR_TO);
+                            if (e <= s) continue;
+                            int left = MINOR_DAY_MIN - dayWork;
+                            if (left <= 0) continue;
+                            boolean same = s == part.startMin() && e == part.endMin();
+                            if (e - s - (same ? part.breakMin() : minBreakFor(e - s)) > left) {
+                                e = s + left + requiredBreak(left);
+                            }
+                        }
+                        boolean cut = s != part.startMin() || e != part.endMin();
+                        int brk = cut ? minBreakFor(e - s) : part.breakMin();
+                        dayWork += e - s - brk;
+                        out.add(new Planned(p.id(), date, s, e, part.name(), brk));
                     }
                 } else {
                     WorkHours w = at(p.workHours(), dow);

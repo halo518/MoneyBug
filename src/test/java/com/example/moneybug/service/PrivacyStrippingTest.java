@@ -20,7 +20,7 @@ class PrivacyStrippingTest {
         UserDto.Response p = UserDto.Response.builder().id(7).kakaoId("k").name("민수").email("a@b.c")
                 .contact("010").certHasPhoto(true).build();
         return new StaffDto(1, 1, 7, p, "오픈", null, 12000, StoreWorker.TaxType.NONE, true, true, null,
-                StoreWorker.Status.ACTIVE, null, null, null, List.of(), List.of(),
+                StoreWorker.Status.ACTIVE, null, null, null, List.of(), List.of(), List.of(),
                 List.of(new StaffDto.WageEntry(LocalDate.of(2026, 1, 1), 12000)), null);
     }
 
@@ -31,7 +31,10 @@ class PrivacyStrippingTest {
         assertNull(d.person().getContact());
         assertNull(d.person().getKakaoId());
         assertEquals("민수", d.person().getName());
-        assertTrue(d.person().isCertHasPhoto());
+        assertFalse(d.person().isCertHasPhoto()); // 동료 보건증 정보는 뺀다
+        assertNull(d.person().getCertExpiry());
+        assertNull(d.person().getCertDaysLeft());
+        assertEquals(List.of(), d.person().getCertAlertDays()); // FE 는 null 을 못 받는다
         assertEquals(0, d.hourlyWage());
         assertNull(d.taxType());
         assertTrue(d.wages().isEmpty());
@@ -56,9 +59,11 @@ class PrivacyStrippingTest {
     @Test
     void draftMonthShiftsHidden() {
         Schedule draft = new Schedule();
+        draft.setId(1);
         draft.setWorkDate(LocalDate.of(2026, 11, 3));
         Schedule noMeta = new Schedule();
         noMeta.setWorkDate(LocalDate.of(2026, 10, 3));
-        assertEquals(List.of(noMeta), StateService.visibleShifts(List.of(draft, noMeta), Set.of("2026-11")));
+        assertEquals(List.of(noMeta), StateService.visibleShifts(List.of(draft, noMeta), Set.of("2026-11"),
+                Set.of(), LocalDate.of(2026, 11, 1)));
     }
 }

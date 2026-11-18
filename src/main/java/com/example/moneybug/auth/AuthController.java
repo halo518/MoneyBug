@@ -91,7 +91,7 @@ public class AuthController {
         String location;
         if (error != null) {
             location = errorRedirect(base, "kakao_denied");
-        } else if (expectedState == null || !expectedState.equals(state)) {
+        } else if (expectedState == null || expectedState.isBlank() || !expectedState.equals(state)) {
             location = errorRedirect(base, "invalid_state");
         } else if (code == null || code.isBlank()) {
             location = errorRedirect(base, "missing_code");

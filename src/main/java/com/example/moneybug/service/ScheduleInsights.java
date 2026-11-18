@@ -18,13 +18,27 @@ import java.util.Set;
 public final class ScheduleInsights {
     private static final int HOLIDAY_MIN = 900;
     private static final int HOLIDAY_CAP = 2400;
+    private static final int MINOR_WEEK_MIN = 2100;
 
-    public record StaffInfo(int id, String name, boolean partTimer, int wage) {}
+    /** minor: 연소 근로자(1일 7시간·주 35시간, 22:00~06:00 금지). */
+    public record StaffInfo(int id, String name, boolean partTimer, int wage, boolean minor) {
+        public StaffInfo(int id, String name, boolean partTimer, int wage) {
+            this(id, name, partTimer, wage, false);
+        }
+    }
     public record Summary(long laborCost, int holidayEligible, long holidayPay, List<String> lines) {}
 
     private ScheduleInsights() {}
 
     public static Summary summarize(YearMonth month, List<FixedShiftPlanner.Planned> shifts, List<StaffInfo> staff,
+                                    List<GapFiller.Gap> unfilled, MonthSchedule.HolidayPolicy policy,
+                                    MonthSchedule.Priority priority) {
+        return summarize(month, shifts, List.of(), staff, unfilled, policy, priority);
+    }
+
+    /** prior: 맥락 근무(첫 대상일 앞 같은 주 + 대상일의 출근 기록 있는 근무). 금액에는 안 넣고 주 7일 경고 판단에만 쓴다. */
+    public static Summary summarize(YearMonth month, List<FixedShiftPlanner.Planned> shifts,
+                                    List<FixedShiftPlanner.Planned> prior, List<StaffInfo> staff,
                                     List<GapFiller.Gap> unfilled, MonthSchedule.HolidayPolicy policy,
                                     MonthSchedule.Priority priority) {
         // 직원별 → 주(월요일) → 실근로 분
@@ -79,6 +93,39 @@ public final class ScheduleInsights {
                 tips.sort(Comparator.comparingLong(Tip::saved).reversed());
                 tips.stream().limit(5).forEach(t -> lines.add(t.text()));
             }
+        }
+        // 빈칸 채우기는 7일째를 넣지 않으니 주 7일이면 고정·기존 근무만으로 그렇게 된 것이다.
+        Map<Integer, Map<LocalDate, Set<LocalDate>>> days = new HashMap<>();
+        for (FixedShiftPlanner.Planned p : java.util.stream.Stream.concat(prior.stream(), shifts.stream()).toList()) {
+            days.computeIfAbsent(p.staffId(), k -> new java.util.TreeMap<>())
+                    .computeIfAbsent(p.date().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)),
+                            k -> new HashSet<>()).add(p.date());
+        }
+        days.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> e.getValue().forEach((monday, set) -> {
+            if (set.size() < 7) return;
+            StaffInfo s = byId.get(e.getKey());
+            lines.add((s == null ? "#" + e.getKey() : s.name()) + "님 " + monday.getMonthValue() + "/"
+                    + monday.getDayOfMonth() + "주 7일 근무예요. 주 1회 휴일이 필요해요");
+        }));
+        // 연소자 제한: 고정 근무는 잘라 넣지만 주 35시간·기존 근무까지 합친 하루 7시간은 여기서 경고한다.
+        for (StaffInfo s : staff) {
+            if (!s.minor()) continue;
+            Map<LocalDate, Integer> perDay = new java.util.TreeMap<>(), perWeek = new java.util.TreeMap<>();
+            boolean night = false;
+            for (FixedShiftPlanner.Planned p : java.util.stream.Stream.concat(prior.stream(), shifts.stream()).toList()) {
+                if (p.staffId() != s.id()) continue;
+                int m = Math.max(0, p.endMin() - p.startMin() - p.breakMin());
+                perDay.merge(p.date(), m, Integer::sum);
+                perWeek.merge(p.date().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)), m, Integer::sum);
+                night |= p.startMin() < FixedShiftPlanner.MINOR_FROM || p.endMin() > FixedShiftPlanner.MINOR_TO;
+            }
+            if (night || perDay.values().stream().anyMatch(m -> m > FixedShiftPlanner.MINOR_DAY_MIN)) {
+                lines.add(s.name() + "님은 연소자라 22시~6시 근무와 하루 7시간 넘는 근무를 할 수 없어요");
+            }
+            perWeek.forEach((monday, m) -> {
+                if (m > MINOR_WEEK_MIN) lines.add(s.name() + "님 " + monday.getMonthValue() + "/" + monday.getDayOfMonth()
+                        + "주 " + hours(m) + "시간이에요. 연소자는 주 35시간까지예요");
+            });
         }
         if (unfilled != null && !unfilled.isEmpty()) {
             int missing = unfilled.stream().mapToInt(GapFiller.Gap::missing).sum();
