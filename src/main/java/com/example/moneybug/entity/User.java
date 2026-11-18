@@ -67,6 +67,10 @@ public class User {
     @Column(name = "cert_photo_url", length = 500)
     private String certPhotoUrl;
 
+    // 직접 올린 프로필 사진 저장 경로 (profileImage 는 카카오 URL). 파일 이름이 바뀌므로 photoVer 로도 쓴다. null = 없음
+    @Column(name = "photo_url", length = 500)
+    private String photoUrl;
+
     // 만료 알림(certAlertDays)을 마지막으로 보낸 날(KST). 같은 날 두 번 보내지 않는다. null = 보낸 적 없음
     @Column(name = "cert_alert_sent_on")
     private LocalDate certAlertSentOn;

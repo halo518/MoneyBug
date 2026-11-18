@@ -38,21 +38,28 @@ public class AppStateDto {
             String employeeStoreId,
             String ownerStoreId) {}
 
-    /** FE Person. 다른 사람 연락처·이메일은 내보내지 않는다. */
+    /**
+     * FE Person. 이메일은 내보내지 않는다. contact 는 본인·재직 직원의 사장님에게만(StateService.withoutCert 가 비운다).
+     * hasPhoto/photoVer: 직접 올린 프로필 사진(GET /people/{id}/photo), photoVer 는 캐시 키.
+     */
     public record Person(
             Integer id,
             String name,
             String fullName,
             LocalDate certExpiry,
             List<Integer> certAlertDays,
-            boolean certHasPhoto) {
+            boolean certHasPhoto,
+            String contact,
+            boolean hasPhoto,
+            String photoVer) {
 
         public static Person from(User u) {
             UserDto.Response r = UserDto.Response.from(u);
             // FE 는 name·fullName 을 null 로 받지 못한다.
             String name = r.getName() == null ? "" : r.getName();
             String fullName = r.getFullName() == null || r.getFullName().isBlank() ? name : r.getFullName();
-            return new Person(r.getId(), name, fullName, r.getCertExpiry(), r.getCertAlertDays(), r.isCertHasPhoto());
+            return new Person(r.getId(), name, fullName, r.getCertExpiry(), r.getCertAlertDays(), r.isCertHasPhoto(),
+                    r.getContact(), r.isHasPhoto(), r.getPhotoVer());
         }
     }
 }

@@ -69,6 +69,22 @@ public class UserDto {
         }
     }
 
+    /** 저장된 사진 파일 이름(업로드마다 새 UUID). 사진이 없으면 null. */
+    public static String photoVer(User user) {
+        String p = user.getPhotoUrl();
+        if (p == null || p.isBlank()) return null;
+        return p.substring(p.lastIndexOf('/') + 1);
+    }
+
+    /** PATCH /me/profile — 보낸 키만 반영(null = 안 보냄). 검증은 DocumentService.updateProfile (한국어 문구). */
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    public static class ProfileRequest {
+        private String fullName;
+        private String contact;
+    }
+
     @Getter
     @Builder
     @NoArgsConstructor
@@ -87,6 +103,10 @@ public class UserDto {
         private boolean certHasPhoto;
         /** computed: 만료까지 남은 일(없으면 null, 지났으면 음수) */
         private Long certDaysLeft;
+        /** 직접 올린 프로필 사진이 있는지 (GET /people/{id}/photo) */
+        private boolean hasPhoto;
+        /** 사진이 바뀔 때마다 달라지는 값(캐시 키). 사진이 없으면 null */
+        private String photoVer;
 
         public static Response from(User user) {
             return Response.builder()
@@ -103,6 +123,8 @@ public class UserDto {
                     .certHasPhoto(user.getCertPhotoUrl() != null && !user.getCertPhotoUrl().isBlank())
                     .certDaysLeft(user.getCertExpiry() == null ? null
                             : ChronoUnit.DAYS.between(LocalDate.now(), user.getCertExpiry()))
+                    .hasPhoto(photoVer(user) != null)
+                    .photoVer(photoVer(user))
                     .build();
         }
     }

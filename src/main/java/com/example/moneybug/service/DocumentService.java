@@ -121,6 +121,100 @@ public class DocumentService {
         });
     }
 
+    // ---- 프로필 (PATCH /me/profile, PUT·DELETE /me/photo, GET /people/{id}/photo) ----
+
+    /** 연락처: 숫자와 - 만. */
+    private static final java.util.regex.Pattern CONTACT = java.util.regex.Pattern.compile("[0-9-]*");
+
+    /**
+     * PATCH /me/profile — 보낸 키(null 이 아닌 것)만 반영. fullName 은 trim 뒤 1~50자(name 도 같은 값으로), contact 는 숫자·- 20자 이하,
+     * 빈 문자열이면 지운다. 커밋 뒤 내 매장(소유·재직·대기)에 변경 신호.
+     */
+    public UserDto.Response updateProfile(Integer userId, UserDto.ProfileRequest request) {
+        User user = userRepository.findByIdForUpdate(userId)
+                .orElseThrow(() -> ApiException.notFound("사용자를 찾을 수 없어요"));
+        String fullName = request.getFullName() == null ? null : request.getFullName().trim();
+        if (fullName != null) {
+            if (fullName.isEmpty()) throw ApiException.badRequest("NAME_REQUIRED", "이름을 입력해 주세요");
+            if (chars(fullName) > 50) throw ApiException.badRequest("NAME_TOO_LONG", "이름은 50자 이하로 입력해 주세요");
+        }
+        String contact = request.getContact() == null ? null : request.getContact().trim();
+        if (contact != null && (contact.length() > 20 || !CONTACT.matcher(contact).matches())) {
+            throw ApiException.badRequest("INVALID_CONTACT", "연락처는 숫자와 - 로 20자 이하로 입력해 주세요");
+        }
+        if (fullName != null) {
+            user.setFullName(fullName);
+            user.setName(fullName); // FE 는 대부분 화면·아바타 글자에 name 을 쓴다
+        }
+        if (contact != null) user.setContact(contact.isEmpty() ? null : contact);
+        afterCertSaved(null, null, "", myStoreIds(userId));
+        return UserDto.Response.from(user);
+    }
+
+    /** PUT /me/photo — 형식·크기 검사는 FileStorage.saveImage. 커밋되면 예전 사진을 지우고 변경 신호. */
+    public UserDto.Response uploadPhoto(Integer userId, MultipartFile photo) {
+        User user = userRepository.findByIdForUpdate(userId)
+                .orElseThrow(() -> ApiException.notFound("사용자를 찾을 수 없어요"));
+        if (photo == null || photo.isEmpty()) {
+            throw ApiException.badRequest("PHOTO_REQUIRED", "사진을 올려 주세요");
+        }
+        String replaced = user.getPhotoUrl();
+        String path = fileStorage.saveImage(photoPrefix(userId), photo);
+        user.setPhotoUrl(path);
+        afterCertSaved(path, replaced, photoPrefix(userId) + "/", myStoreIds(userId));
+        return UserDto.Response.from(user);
+    }
+
+    /** DELETE /me/photo — 없어도 200. 커밋되면 파일을 지우고 변경 신호. */
+    public UserDto.Response deletePhoto(Integer userId) {
+        User user = userRepository.findByIdForUpdate(userId)
+                .orElseThrow(() -> ApiException.notFound("사용자를 찾을 수 없어요"));
+        String replaced = user.getPhotoUrl();
+        user.setPhotoUrl(null);
+        afterCertSaved(null, replaced, photoPrefix(userId) + "/", myStoreIds(userId));
+        return UserDto.Response.from(user);
+    }
+
+    /**
+     * GET /people/{personId}/photo 경로. 본인, 그 사람이 속한(어떤 상태든) 매장의 사장님,
+     * 그 사람이 사장인 매장의 재직·대기 직원, 같은 매장 재직 동료만. 아니면 403, 사진이 없으면 404.
+     */
+    @Transactional(readOnly = true)
+    public String personPhotoPath(Integer viewerId, Integer personId) {
+        if (!viewerId.equals(personId) && !sharesStore(viewerId, personId)) {
+            throw ApiException.forbidden("같은 매장 사람의 사진만 볼 수 있어요");
+        }
+        String p = userRepository.findById(personId)
+                .orElseThrow(() -> ApiException.notFound("사용자를 찾을 수 없어요")).getPhotoUrl();
+        if (p == null || p.isBlank()) throw ApiException.notFound("프로필 사진이 없어요");
+        return p;
+    }
+
+    private boolean sharesStore(Integer viewerId, Integer personId) {
+        List<StoreWorker> viewerRows = storeWorkerRepository.findByWorkerIdAndStatusIn(viewerId,
+                List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.PENDING));
+        if (viewerRows.stream().anyMatch(m -> m.getStore().getEmployer().getId().equals(personId))) return true;
+        java.util.Set<Integer> viewerActive = new java.util.HashSet<>();
+        viewerRows.stream().filter(m -> m.getStatus() == StoreWorker.Status.ACTIVE)
+                .forEach(m -> viewerActive.add(m.getStore().getId()));
+        return storeWorkerRepository.findByWorkerIdAndStatusIn(personId, List.of(StoreWorker.Status.values()))
+                .stream().anyMatch(m -> m.getStore().getEmployer().getId().equals(viewerId)
+                        || (m.getStatus() == StoreWorker.Status.ACTIVE && viewerActive.contains(m.getStore().getId())));
+    }
+
+    /** 내 이름·사진이 보이는 매장: 소유 + 재직·가입 대기 (WatchedStores 와 같은 범위). */
+    private List<Integer> myStoreIds(Integer userId) {
+        List<Integer> ids = new ArrayList<>();
+        storeRepository.findByEmployerId(userId).forEach(s -> ids.add(s.getId()));
+        storeWorkerRepository.findByWorkerIdAndStatusIn(userId,
+                List.of(StoreWorker.Status.ACTIVE, StoreWorker.Status.PENDING)).forEach(m -> ids.add(m.getStore().getId()));
+        return ids;
+    }
+
+    private static String photoPrefix(Integer userId) {
+        return "profile-photo/" + userId;
+    }
+
     /** POST /me/signatures — 서명 PNG 저장. 돌려주는 id 만 계약 서명 API 가 받는다. */
     public String saveSignature(Integer userId, MultipartFile image) {
         if (image == null || image.isEmpty()) {

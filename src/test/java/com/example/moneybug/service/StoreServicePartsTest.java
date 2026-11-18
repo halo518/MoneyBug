@@ -258,4 +258,17 @@ class StoreServicePartsTest {
         var ex = assertThrows(ApiException.class, () -> service.updateSettings(1, 10, r));
         assertEquals("INVALID_HOURS", ex.getCode());
     }
+
+    @Test
+    void settingsAddress() {
+        StoreDto.SettingsRequest r = new StoreDto.SettingsRequest();
+        r.setAddress("가".repeat(256));
+        assertEquals("STORE_FIELD_TOO_LONG",
+                assertThrows(ApiException.class, () -> service.updateSettings(1, 10, r)).getCode());
+        r.setAddress("   ");
+        assertEquals("STORE_REQUIRED_FIELDS",
+                assertThrows(ApiException.class, () -> service.updateSettings(1, 10, r)).getCode());
+        r.setAddress("  서울시 강남구 1  ");
+        assertEquals("서울시 강남구 1", service.updateSettings(1, 10, r).getAddress());
+    }
 }
