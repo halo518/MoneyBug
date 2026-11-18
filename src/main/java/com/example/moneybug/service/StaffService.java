@@ -4,14 +4,17 @@ import com.example.moneybug.dto.CommonDto;
 import com.example.moneybug.dto.StaffCommandDto;
 import com.example.moneybug.dto.StaffDto;
 import com.example.moneybug.dto.StoreWorkerDto;
+import com.example.moneybug.entity.Attendance;
 import com.example.moneybug.entity.Notification;
 import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StoreWorker;
+import com.example.moneybug.entity.SubstituteApplicant;
 import com.example.moneybug.entity.SubstituteRequest;
 import com.example.moneybug.repository.AttendanceRepository;
 import com.example.moneybug.repository.ScheduleRepository;
 import com.example.moneybug.repository.StorePartRepository;
+import com.example.moneybug.repository.StoreRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
 import com.example.moneybug.repository.SubstituteApplicantRepository;
 import com.example.moneybug.repository.SubstituteRequestRepository;
@@ -20,6 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Collection;
@@ -44,6 +48,10 @@ public class StaffService {
     private final ScheduleDeleter scheduleDeleter;
     private final NotificationPublisher notifier;
     private final StaffWageService wages;
+    private final StoreRepository storeRepository;
+
+    /** 퇴사 처리 때 열린 출근 기록을 닫으며 남기는 사유. */
+    static final String LEAVE_CLOCK_OUT_REASON = "퇴사 처리로 자동 퇴근";
 
     /** GET /staff?status= — 사장님·직원. status 생략 시 사장님은 재직+대기, 직원은 재직만. */
     @Transactional(readOnly = true)
@@ -78,14 +86,20 @@ public class StaffService {
 
     /** POST .../approve — wage >= 최저임금, PENDING 만 가능. status=ACTIVE, joinedAt=오늘, 신청자에게 JOIN 알림. */
     public StaffDto approve(Integer userId, Integer storeId, Integer staffId, StaffCommandDto.ApproveRequest request) {
+        lockStore(storeId);
         Store store = access.requireOwner(userId, storeId);
-        StoreWorker sw = access.staff(storeId, staffId);
+        StoreWorker sw = lockStaff(storeId, staffId);
         if (sw.getStatus() != StoreWorker.Status.PENDING) {
             throw ApiException.conflict("NOT_PENDING", "가입 신청 상태가 아니에요");
         }
         requireMinWage(request.hourlyWage());
         if (staffRepoActive(storeId, sw)) {
             throw ApiException.conflict("ALREADY_ACTIVE", "이미 재직 중인 직원이에요");
+        }
+        // 같은 사람의 다른 대기 신청(중복 신청)은 조용히 닫는다: 재직 행 하나만 남긴다.
+        for (StoreWorker dup : storeWorkerRepository.findByStoreIdAndWorkerIdAndStatus(storeId,
+                sw.getWorker().getId(), StoreWorker.Status.PENDING)) {
+            if (!dup.getId().equals(sw.getId())) dup.setStatus(StoreWorker.Status.REJECTED);
         }
 
         sw.setHourlyWage(request.hourlyWage());
@@ -103,8 +117,9 @@ public class StaffService {
 
     /** POST .../reject — PENDING 만 가능. status=REJECTED, 신청자에게 JOIN 알림. */
     public void reject(Integer userId, Integer storeId, Integer staffId) {
+        lockStore(storeId);
         Store store = access.requireOwner(userId, storeId);
-        StoreWorker sw = access.staff(storeId, staffId);
+        StoreWorker sw = lockStaff(storeId, staffId);
         if (sw.getStatus() != StoreWorker.Status.PENDING) {
             throw ApiException.conflict("NOT_PENDING", "가입 신청 상태가 아니에요");
         }
@@ -115,8 +130,9 @@ public class StaffService {
 
     /** PATCH .../staff/{staffId} — 보낸 것만 반영, 시급은 최저임금 검증(시급 편집 3곳 모두 동일). */
     public StaffDto update(Integer userId, Integer storeId, Integer staffId, StaffCommandDto.UpdateRequest request) {
+        // 시급 이력 INSERT(FK 공유 락) 전에 직원 행을 먼저 잠근다: 동시 변경 데드락·기준 행 중복 방지.
+        StoreWorker sw = lockStaff(storeId, staffId);
         access.requireOwner(userId, storeId);
-        StoreWorker sw = access.staff(storeId, staffId);
         if (sw.getStatus() != StoreWorker.Status.ACTIVE) {
             throw ApiException.conflict("NOT_ACTIVE", "재직 중인 직원이 아니에요");
         }
@@ -148,31 +164,51 @@ public class StaffService {
      * 1) status=LEFT
      * 2) 오늘 이후이면서 출근 기록 없는 근무 삭제
      * 3) 진행 중 대타: 요청자면 CANCELLED, 지원자면 지원자에서 제거(후보였다면 taker=null, OPEN 으로 되돌림)
-     * 4) 본인에게 JOIN 알림
+     * 4) 근무 중이면 열린 출근 기록을 지금 시각으로 닫는다
+     * 5) 본인에게 JOIN 알림
+     * 대기·거절 신청자는 409 NOT_ACTIVE (신청 정리는 reject).
      */
     public void remove(Integer userId, Integer storeId, Integer staffId) {
+        lockStore(storeId);
         Store store = access.requireOwner(userId, storeId);
-        StoreWorker sw = access.staff(storeId, staffId);
+        StoreWorker sw = lockStaff(storeId, staffId);
         if (sw.getStatus() == StoreWorker.Status.LEFT) {
             return; // 멱등
+        }
+        if (sw.getStatus() != StoreWorker.Status.ACTIVE) {
+            throw ApiException.conflict("NOT_ACTIVE", "재직 중인 직원이 아니에요");
         }
         sw.setStatus(StoreWorker.Status.LEFT);
         sw.setLeftAt(TimeUtil.today());
         storeService.syncSize(store);
         Integer workerUserId = sw.getWorker().getId();
+        String workerName = sw.getWorker().getName();
 
         List<SubstituteRequest> inProgress = substituteRequestRepository.findByStoreAndStatusIn(storeId,
                 List.of(SubstituteRequest.Status.OPEN, SubstituteRequest.Status.ACCEPTED));
         for (SubstituteRequest r : inProgress) {
+            String label = TimeUtil.label(r.getSchedule());
             if (r.getRequester().getId().equals(workerUserId)) {
                 r.setStatus(SubstituteRequest.Status.CANCELLED);
+                // 근무와 함께 요청이 지워지기 전에 지원자에게 알린다.
+                for (SubstituteApplicant a : substituteApplicantRepository.findByRequestId(r.getId())) {
+                    notifier.send(store, a.getApplicant(), Notification.Type.SUB,
+                            workerName + "님의 대타 요청이 취소됐어요", label, r.getId());
+                }
             } else if (substituteApplicantRepository.existsByRequestIdAndApplicantId(r.getId(), workerUserId)) {
                 substituteApplicantRepository.deleteByRequestIdAndApplicantId(r.getId(), workerUserId);
                 if (r.getTaker() != null && r.getTaker().getId().equals(workerUserId)) {
-                    r.setTaker(null);
-                    r.setStatus(SubstituteRequest.Status.OPEN);
+                    promoteNextApplicant(store, r, workerUserId, label);
                 }
             }
+        }
+
+        LocalDateTime now = TimeUtil.now();
+        for (Attendance a : attendanceRepository.findOpenByUserAndStore(workerUserId, storeId)) {
+            if (!a.getSchedule().getStoreWorker().getId().equals(sw.getId())) continue;
+            a.setActualEnd(now.isAfter(a.getActualStart()) ? now : a.getActualStart());
+            a.setEditReason(LEAVE_CLOCK_OUT_REASON);
+            a.setOvertimeMinutes(AttendanceCalc.overtimeMinutes(a.getSchedule(), a));
         }
 
         LocalDate today = TimeUtil.today();
@@ -206,6 +242,43 @@ public class StaffService {
         notifier.sendToStaff(store, sw, Notification.Type.CERT, title, body, sw.getId());
     }
 
+    /**
+     * 후보(taker)가 퇴사로 빠졌을 때: 남은 지원자 중 가장 먼저 지원한 사람을 후보로 올리고(ACCEPTED 유지),
+     * 없으면 OPEN 으로 되돌린다. 요청자·사장님(·새 후보)에게 알린다.
+     */
+    private void promoteNextApplicant(Store store, SubstituteRequest r, Integer leaverUserId, String label) {
+        SubstituteApplicant next = substituteApplicantRepository.findByRequestId(r.getId()).stream()
+                .filter(a -> !a.getApplicant().getId().equals(leaverUserId))
+                .min(Comparator.comparing(SubstituteApplicant::getAppliedAt,
+                                Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(SubstituteApplicant::getId, Comparator.nullsLast(Comparator.naturalOrder())))
+                .orElse(null);
+        String title;
+        if (next == null) {
+            r.setTaker(null);
+            r.setStatus(SubstituteRequest.Status.OPEN);
+            title = "대타 후보가 퇴사해서 다시 대타를 구해요";
+        } else {
+            r.setTaker(next.getApplicant());
+            r.setStatus(SubstituteRequest.Status.ACCEPTED);
+            title = "대타 후보가 " + next.getApplicant().getName() + "님으로 바뀌었어요";
+            notifier.send(store, next.getApplicant(), Notification.Type.SUB, "대타 후보가 됐어요", label, r.getId());
+        }
+        notifier.send(store, r.getRequester(), Notification.Type.SUB, title, label, r.getId());
+        notifier.sendToOwner(store, Notification.Type.SUB, title, label, r.getId());
+    }
+
+    /** 매장 단위 직렬화: 트랜잭션 첫 문장으로 매장 행을 잠근다. */
+    private void lockStore(Integer storeId) {
+        storeRepository.findByIdForUpdate(storeId)
+                .orElseThrow(() -> ApiException.notFound("매장을 찾을 수 없어요"));
+    }
+
+    private StoreWorker lockStaff(Integer storeId, Integer staffId) {
+        return storeWorkerRepository.findByIdAndStoreIdForUpdate(staffId, storeId)
+                .orElseThrow(() -> ApiException.notFound("직원을 찾을 수 없어요"));
+    }
+
     private boolean staffRepoActive(Integer storeId, StoreWorker sw) {
         return storeWorkerRepository.existsByStoreIdAndWorkerIdAndStatus(storeId, sw.getWorker().getId(),
                 StoreWorker.Status.ACTIVE);
@@ -213,7 +286,8 @@ public class StaffService {
 
     /** 매장 파트 이름이거나 유동 근무 "직원"(또는 빈 값)만 허용. */
     private String validPart(Integer storeId, String part) {
-        if (part.isBlank() || "직원".equals(part)) return part;
+        if (part.isBlank()) return ""; // 공백만 보내면 기본 파트 없음
+        if ("직원".equals(part)) return part;
         if (storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream().noneMatch(p -> p.getName().equals(part))) {
             throw ApiException.badRequest("INVALID_PART", "매장에 없는 파트예요: " + part);
         }
@@ -242,9 +316,14 @@ public class StaffService {
         if (value.size() != 7) throw ApiException.badRequest("INVALID_WORK_HOURS", "근무 시간은 월~일 7칸이어야 해요");
         for (StaffPrefs.WorkHours h : value) {
             if (h == null) continue;
-            if (h.startMin() < 0 || h.startMin() > 1439 || h.endMin() <= h.startMin()
-                    || h.endMin() - h.startMin() > 1440) {
+            if (h.startMin() < 0 || h.startMin() > 1439) {
+                throw ApiException.badRequest("INVALID_WORK_HOURS", "출근 시각은 0시부터 23시 59분 사이여야 해요");
+            }
+            if (h.endMin() <= h.startMin()) {
                 throw ApiException.badRequest("INVALID_WORK_HOURS", "퇴근 시각은 출근 시각보다 늦어야 해요");
+            }
+            if (h.endMin() - h.startMin() > 1440) {
+                throw ApiException.badRequest("INVALID_WORK_HOURS", "근무 시간은 24시간을 넘을 수 없어요");
             }
         }
         return value;
@@ -254,6 +333,9 @@ public class StaffService {
         if (wage == null || wage < StoreWorkerDto.MIN_WAGE_2026) {
             throw ApiException.badRequest("WAGE_BELOW_MINIMUM",
                     "시급은 2026 최저임금 " + String.format("%,d", StoreWorkerDto.MIN_WAGE_2026) + "원 이상이어야 해요");
+        }
+        if (wage > StaffCommandDto.MAX_WAGE) {
+            throw ApiException.badRequest("WAGE_TOO_HIGH", "시급은 1,000,000원 이하로 입력해 주세요");
         }
     }
 }
