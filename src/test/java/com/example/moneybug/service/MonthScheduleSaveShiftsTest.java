@@ -451,6 +451,7 @@ class MonthScheduleSaveShiftsTest {
             order.verify(monthRepo).lockStore(1);
             order.verify(access).requireOwner(7, 1);
         }
+    }
 
     @Test
     void briefFailureIsShownAndSignalled() {

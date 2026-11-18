@@ -66,7 +66,7 @@ public class SubstituteService {
         Store store = lockStore(storeId); // 같은 근무의 동시 요청을 줄 세운다(진행 중 요청 1건)
         StoreWorker me = access.requireActiveStaff(userId, storeId);
         Schedule shift = scheduleRepository.findByIdAndStore(shiftId, storeId)
-                .filter(s -> !draftMonths(storeId).contains(month(s)))
+                .filter(s -> !hiddenFromStaff(storeId, s))
                 .orElseThrow(() -> ApiException.notFound("근무를 찾을 수 없어요"));
         if (!shift.getStoreWorker().getId().equals(me.getId())) {
             throw ApiException.forbidden("본인 근무만 대타를 요청할 수 있어요");
@@ -125,7 +125,8 @@ public class SubstituteService {
         LocalDateTime now = TimeUtil.now();
 
         return CommonDto.ListResponse.of(substituteRequestRepository.findByStore(storeId).stream()
-                .filter(r -> !hidden.contains(month(r.getSchedule())))
+                .filter(r -> hidden.isEmpty() || !StateService.hiddenFromStaff(r.getSchedule(), hidden,
+                        attendanceRepository.existsByScheduleId(r.getSchedule().getId()), TimeUtil.today()))
                 .filter(r -> !pendingFilter || (r.isPending() && TimeUtil.start(r.getSchedule()).isAfter(now)))
                 .filter(r -> wanted == null || r.getStatus() == wanted)
                 .filter(r -> !mine || r.getRequester().getId().equals(userId))
@@ -148,7 +149,7 @@ public class SubstituteService {
         Store store = lockStore(storeId);
         StoreWorker me = access.requireActiveStaff(userId, storeId);
         SubstituteRequest r = lockRequest(storeId, requestId);
-        if (draftMonths(storeId).contains(month(r.getSchedule()))) {
+        if (hiddenFromStaff(storeId, r.getSchedule())) {
             throw ApiException.notFound("대타 요청을 찾을 수 없어요");
         }
         requirePending(r);
@@ -363,6 +364,12 @@ public class SubstituteService {
         return monthScheduleRepository.findByStoreIdOrderByMonthAsc(storeId).stream()
                 .filter(m -> m.getStatus() == MonthSchedule.Status.DRAFT)
                 .map(MonthSchedule::getMonth).collect(Collectors.toSet());
+    }
+
+    /** 직원에게 안 보이는 근무(작성 중 달 + 오늘보다 뒤 + 출근 기록 없음). /me/state 와 같은 규칙. */
+    private boolean hiddenFromStaff(Integer storeId, Schedule s) {
+        return StateService.hiddenFromStaff(s, draftMonths(storeId),
+                attendanceRepository.existsByScheduleId(s.getId()), TimeUtil.today());
     }
 
     private static String month(Schedule s) {

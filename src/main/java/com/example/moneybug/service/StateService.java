@@ -80,6 +80,12 @@ public class StateService {
                         || !draftMonths.contains(YearMonth.from(s.getWorkDate()).toString())).toList();
     }
 
+    /** 직원에게 숨기는 근무 한 건: 작성 중 달 + 오늘보다 뒤 + 출근 기록 없음 (visibleShifts 와 같은 규칙). */
+    static boolean hiddenFromStaff(Schedule s, Set<String> draftMonths, boolean attended, LocalDate today) {
+        return s.getWorkDate().isAfter(today) && !attended
+                && draftMonths.contains(YearMonth.from(s.getWorkDate()).toString());
+    }
+
     /** 보건증 필드를 비운 Person (본인·재직 직원의 사장님이 아닌 사람에게). */
     static AppStateDto.Person withoutCert(AppStateDto.Person p) {
         return new AppStateDto.Person(p.id(), p.name(), p.fullName(), null, List.of(), false);

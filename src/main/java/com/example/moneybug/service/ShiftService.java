@@ -87,7 +87,10 @@ public class ShiftService {
         }
         List<Schedule> rows = scheduleRepository.findByStoreBetween(storeId, start, end);
         if (!access.isOwner(store, userId)) {
-            rows = StateService.visibleShifts(rows, draftMonths(storeId)); // /me/state 와 같은 규칙
+            Set<Integer> attended = attendanceRepository
+                    .findByScheduleIdIn(rows.stream().map(Schedule::getId).toList()).stream()
+                    .map(at -> at.getSchedule().getId()).collect(java.util.stream.Collectors.toSet());
+            rows = StateService.visibleShifts(rows, draftMonths(storeId), attended, TimeUtil.today()); // /me/state 와 같은 규칙
         }
         return CommonDto.ListResponse.of(rows.stream()
                 .filter(s -> staffId == null || s.getStoreWorker().getId().equals(staffId))
@@ -101,7 +104,8 @@ public class ShiftService {
     public ScheduleDto.Response get(Integer userId, Integer storeId, Integer shiftId) {
         Store store = access.requireOwnerOrStaff(userId, storeId);
         Schedule s = findShift(storeId, shiftId);
-        if (!access.isOwner(store, userId) && isDraftMonth(storeId, s.getWorkDate())) {
+        if (!access.isOwner(store, userId) && StateService.hiddenFromStaff(s, draftMonths(storeId),
+                attendanceRepository.existsByScheduleId(s.getId()), TimeUtil.today())) {
             throw ApiException.notFound("근무를 찾을 수 없어요");
         }
         return ScheduleDto.Response.from(s);

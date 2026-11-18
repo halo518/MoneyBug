@@ -54,7 +54,7 @@ class DocumentContractTest {
         stores = mock(StoreRepository.class);
         notifier = mock(NotificationPublisher.class);
         svc = new DocumentService(mock(UserRepository.class), mock(StoreWorkerRepository.class), contracts, access,
-                notifier, files, wages, stores);
+                notifier, files, wages, stores, mock(StoreChangeHub.class));
         User emp = new User();
         emp.setId(EMP);
         emp.setName("알바");
