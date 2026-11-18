@@ -29,7 +29,9 @@ class NoticeServiceQaTest {
     final NoticeReadRepository reads = mock(NoticeReadRepository.class);
     final StoreWorkerRepository workers = mock(StoreWorkerRepository.class);
     final StoreAccess access = mock(StoreAccess.class);
-    final NoticeService svc = new NoticeService(notices, reads, workers, access,
+    final com.example.moneybug.repository.NotificationRepository notifications =
+            mock(com.example.moneybug.repository.NotificationRepository.class);
+    final NoticeService svc = new NoticeService(notices, reads, notifications, workers, access,
             mock(StaffAssembler.class), mock(NotificationPublisher.class));
     final Store store = new Store();
 
@@ -141,5 +143,34 @@ class NoticeServiceQaTest {
         assertEquals("REMIND_TOO_SOON", e.getCode());
         verify(notices).findByIdAndStoreIdForUpdate(5, 1);
         verify(notices, never()).findByIdAndStoreId(anyInt(), anyInt());
+    }
+
+    @Test
+    void updateValidatesLikePublishAndKeepsReads() {
+        Notice n = notice(LocalDateTime.of(2026, 11, 10, 10, 0));
+        when(notices.findByIdAndStoreId(5, 1)).thenReturn(Optional.of(n));
+
+        NoticeDto.Request blank = req(" ", "x");
+        assertEquals("NOTICE_REQUIRED_FIELDS",
+                assertThrows(ApiException.class, () -> svc.update(9, 1, 5, blank)).getCode());
+
+        NoticeDto.Request r = req("  새 제목 ", " 새 내용 ");
+        r.setRequired(true);
+        svc.update(9, 1, 5, r);
+        assertEquals("새 제목", n.getTitle());
+        assertEquals("새 내용", n.getContent());
+        assertTrue(n.isRequired());
+        verify(reads, never()).deleteByNoticeId(anyInt());
+    }
+
+    @Test
+    void deleteRemovesReadsAndNotifications() {
+        Notice n = notice(LocalDateTime.of(2026, 11, 10, 10, 0));
+        when(notices.findByIdAndStoreId(5, 1)).thenReturn(Optional.of(n));
+
+        svc.delete(9, 1, 5);
+        verify(reads).deleteByNoticeId(5);
+        verify(notifications).deleteByTypeAndRefId(com.example.moneybug.entity.Notification.Type.NOTICE, 5);
+        verify(notices).delete(n);
     }
 }
