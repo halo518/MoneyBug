@@ -5,6 +5,7 @@ import com.example.moneybug.entity.SubstituteRequest;
 import com.example.moneybug.entity.User;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -23,7 +24,8 @@ public class SubstituteRequestDto {
     public static class Request {
         // [변경] scheduleId/requesterId 제거: 경로의 {shiftId} 와 JWT 로그인 사용자로 결정한다.
         // 설계서: 사유 필수 ("사유를 입력해 주세요")
-        @NotBlank
+        @NotBlank(message = "사유를 입력해 주세요")
+        @Size(max = 1000, message = "사유는 1000자까지 쓸 수 있어요")
         private String reason;
 
         private boolean notifyPeers = true;
