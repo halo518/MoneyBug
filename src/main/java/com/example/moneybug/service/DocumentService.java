@@ -10,9 +10,11 @@ import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.entity.User;
 import com.example.moneybug.repository.ContractRepository;
+import com.example.moneybug.repository.StoreRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
 import com.example.moneybug.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -37,6 +39,7 @@ public class DocumentService {
     private final NotificationPublisher notifier;
     private final FileStorage fileStorage;
     private final StaffWageService wages;
+    private final StoreRepository storeRepository;
 
     /**
      * PUT /me/health-cert — expiry/alertDays/photo 모두 필수. certExpiry·certAlertDays·certPhotoUrl 저장.
@@ -84,6 +87,17 @@ public class DocumentService {
         return "signatures/" + userId;
     }
 
+    /** 본인이 올린 서명이고 실제로 저장된 파일인지. */
+    private void requireOwnSignatureFile(Integer userId, String signatureUrl) {
+        requireOwnSignature(userId, signatureUrl);
+        try {
+            fileStorage.read(signatureUrl);
+        } catch (ApiException e) {
+            if (e.getStatus() != HttpStatus.NOT_FOUND) throw e;
+            throw ApiException.badRequest("INVALID_SIGNATURE", "서명 이미지를 찾을 수 없어요. 다시 서명해 주세요");
+        }
+    }
+
     /** 본인이 올린 서명인지 (다른 사람 파일·경로 탈출 차단). */
     static void requireOwnSignature(Integer userId, String signatureUrl) {
         if (signatureUrl == null || signatureUrl.contains("..")
@@ -115,6 +129,9 @@ public class DocumentService {
     /** 서명 이미지 경로. who = owner | employee. 그 매장 사장님이나 계약 당사자 직원만. */
     @Transactional(readOnly = true)
     public String signaturePath(Integer userId, Integer storeId, Integer staffId, String who) {
+        if (!"owner".equals(who) && !"employee".equals(who)) {
+            throw ApiException.badRequest("INVALID_WHO", "서명 종류는 owner 또는 employee 여야 해요");
+        }
         StoreWorker sw = access.staff(storeId, staffId);
         if (!access.isOwner(access.store(storeId), userId) && !sw.getWorker().getId().equals(userId)) {
             throw ApiException.forbidden("계약 당사자만 볼 수 있어요");
@@ -129,9 +146,11 @@ public class DocumentService {
     /**
      * PUT .../staff/{staffId}/contract — 사장님이 작성+서명해서 보냄.
      * 검증: 시급 >= 최저임금, 종료일 > 시작일, 필수 4항목(DTO). 새 계약서를 이력으로 쌓고 직원에게 CONTRACT 알림.
+     * 매장 행을 먼저 잠가 같은 직원 계약서·시급 이력 쓰기를 직렬화한다.
      */
     public ContractDto.Response upsertContract(Integer userId, Integer storeId, Integer staffId,
                                                ContractDto.Request request) {
+        storeRepository.findByIdForUpdate(storeId);
         Store store = access.requireOwner(userId, storeId);
         StoreWorker sw = access.staff(storeId, staffId);
         if (sw.getStatus() != StoreWorker.Status.ACTIVE) {
@@ -144,15 +163,26 @@ public class DocumentService {
         if (!request.getEndDate().isAfter(request.getStartDate())) {
             throw ApiException.badRequest("INVALID_CONTRACT_PERIOD", "계약 종료일은 시작일 이후여야 해요");
         }
+        // DB varchar 는 글자 수로 센다 (@Size 는 UTF-16 단위라 이모지를 두 번 센다)
+        if (chars(request.getWorkDays()) > 50) {
+            throw ApiException.badRequest("WORK_DAYS_TOO_LONG", "근무 요일은 50자 이하로 적어 주세요");
+        }
+        if (chars(request.getDuty()) > 100) {
+            throw ApiException.badRequest("DUTY_TOO_LONG", "업무 내용은 100자 이하로 적어 주세요");
+        }
 
         if (request.getOwnerSignatureUrl() != null && !request.getOwnerSignatureUrl().isBlank()) {
-            requireOwnSignature(userId, request.getOwnerSignatureUrl());
+            requireOwnSignatureFile(userId, request.getOwnerSignatureUrl());
         } else {
             request.setOwnerSignatureUrl(null);
         }
+        // 서명 전에 대체되는 계약서는 효력이 없었으므로 그 시급 단계도 지운다
+        Integer supersededUnsigned = contractRepository.findFirstByStoreWorkerIdOrderByCreatedAtDescIdDesc(sw.getId())
+                .filter(prev -> prev.getEmployeeSignedAt() == null).map(Contract::getId).orElse(null);
         Contract contract = request.toEntity(sw); // ownerSignedAt = 지금, employeeSignedAt = null
         contractRepository.save(contract);
-        wages.record(sw, request.getStartDate(), request.getWage());
+        wages.recordContract(sw, contract.getId(), request.getStartDate(), request.getEndDate(), request.getWage(),
+                supersededUnsigned);
 
         notifier.sendToStaff(store, sw, Notification.Type.CONTRACT, "근로계약서 서명 요청",
                 store.getStoreName(), contract.getId());
@@ -160,7 +190,8 @@ public class DocumentService {
     }
 
     /**
-     * POST .../contract/sign — 본인(직원)만. 계약서가 없으면 404, 이미 서명했으면 409.
+     * POST .../contract/sign — 본인(직원)만. 계약서가 없으면 404, 이미 서명했으면 409,
+     * contractId 를 보냈는데 현재 계약서가 아니면 409 CONTRACT_CHANGED. 현재 계약서 행을 잠가 동시 서명은 한 번만 성공.
      * employeeSignedAt=now + 서명 이미지·IP·약관 버전 기록, 사장님에게 CONTRACT 알림.
      */
     public ContractDto.Response signContract(Integer userId, Integer storeId, Integer staffId,
@@ -173,9 +204,12 @@ public class DocumentService {
         if (sw.getStatus() != StoreWorker.Status.ACTIVE) {
             throw ApiException.conflict("NOT_ACTIVE", "재직 중인 직원이 아니에요");
         }
-        requireOwnSignature(userId, request.getSignatureUrl());
-        Contract contract = contractRepository.findFirstByStoreWorkerIdOrderByCreatedAtDescIdDesc(sw.getId())
+        requireOwnSignatureFile(userId, request.getSignatureUrl());
+        Contract contract = contractRepository.findFirstForUpdateByStoreWorkerIdOrderByCreatedAtDescIdDesc(sw.getId())
                 .orElseThrow(() -> ApiException.notFound("서명할 근로계약서가 없어요"));
+        if (request.getContractId() != null && !request.getContractId().equals(contract.getId())) {
+            throw ApiException.conflict("CONTRACT_CHANGED", "사장님이 계약서를 다시 작성했어요. 새 계약서를 확인하고 서명해 주세요");
+        }
         if (contract.getEmployeeSignedAt() != null) {
             throw ApiException.conflict("ALREADY_SIGNED", "이미 서명한 계약서예요");
         }
@@ -188,5 +222,9 @@ public class DocumentService {
         notifier.sendToOwner(store, Notification.Type.CONTRACT,
                 sw.getWorker().getName() + "님이 근로계약서에 서명했어요", null, contract.getId());
         return ContractDto.Response.from(contract);
+    }
+
+    private static int chars(String s) {
+        return s == null ? 0 : s.codePointCount(0, s.length());
     }
 }
