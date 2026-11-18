@@ -9,6 +9,7 @@ import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StoreWorker;
 import com.example.moneybug.repository.NoticeReadRepository;
 import com.example.moneybug.repository.NoticeRepository;
+import com.example.moneybug.repository.NotificationRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -35,6 +36,7 @@ public class NoticeService {
 
     private final NoticeRepository noticeRepository;
     private final NoticeReadRepository noticeReadRepository;
+    private final NotificationRepository notificationRepository;
     private final StoreWorkerRepository storeWorkerRepository;
     private final StoreAccess access;
     private final StaffAssembler staffAssembler;
@@ -82,26 +84,35 @@ public class NoticeService {
      */
     public NoticeViewDto.View publish(Integer userId, Integer storeId, NoticeDto.Request request) {
         Store store = access.requireOwner(userId, storeId);
-        String title = request.getTitle() == null ? "" : request.getTitle().strip();
-        String body = request.getContent() == null ? "" : request.getContent().strip();
-        if (title.isEmpty() || body.isEmpty()) {
-            throw ApiException.badRequest("NOTICE_REQUIRED_FIELDS", "제목과 내용을 입력해 주세요");
-        }
-        if (charCount(title) > TITLE_MAX) {
-            throw ApiException.badRequest("NOTICE_TOO_LONG", "공지 제목은 " + TITLE_MAX + "자까지 쓸 수 있어요");
-        }
-        if (charCount(body) > CONTENT_MAX) {
-            throw ApiException.badRequest("NOTICE_TOO_LONG", "공지 내용은 " + CONTENT_MAX + "자까지 쓸 수 있어요");
-        }
         Notice notice = request.toEntity(store);
+        applyText(notice, request);
         if (notice.getCategory() == null) notice.setCategory(Notice.Category.GENERAL);
-        notice.setTitle(title);
-        notice.setContent(body);
         noticeRepository.save(notice);
 
         notifier.sendToActiveStaff(store, null, Notification.Type.NOTICE,
                 notice.isRequired() ? "새 필독 공지" : "새 공지", notice.getTitle(), notice.getId());
         return view(notice, Map.of(), true, null, activeStaff(storeId));
+    }
+
+    /** PUT /notices/{id} — 사장님. 검증은 작성과 같다. 읽음 기록은 그대로 두고 알림도 다시 보내지 않는다. */
+    public NoticeViewDto.View update(Integer userId, Integer storeId, Integer noticeId, NoticeDto.Request request) {
+        access.requireOwner(userId, storeId);
+        Notice n = find(storeId, noticeId);
+        applyText(n, request);
+        if (request.getCategory() != null) n.setCategory(request.getCategory());
+        if (request.getRequired() != null) n.setRequired(request.getRequired());
+        Map<Integer, LocalDateTime> reads = noticeReadRepository.findByNoticeId(n.getId()).stream()
+                .collect(Collectors.toMap(r -> r.getStoreWorker().getId(), NoticeRead::getReadAt, (a, b) -> a));
+        return view(n, reads, true, null, activeStaff(storeId));
+    }
+
+    /** DELETE /notices/{id} — 사장님. 읽음 기록과 그 공지를 가리키는 알림도 함께 지운다. */
+    public void delete(Integer userId, Integer storeId, Integer noticeId) {
+        access.requireOwner(userId, storeId);
+        Notice n = find(storeId, noticeId);
+        noticeReadRepository.deleteByNoticeId(n.getId());
+        notificationRepository.deleteByTypeAndRefId(Notification.Type.NOTICE, n.getId());
+        noticeRepository.delete(n);
     }
 
     /** POST /notices/{id}/read — 직원. 이미 읽었으면 변경 없음(멱등). */
@@ -160,6 +171,23 @@ public class NoticeService {
     }
 
     // ------------------------------------------------------------------ 내부
+
+    /** 제목·내용을 다듬고 검사해서 공지에 넣는다 (작성·수정 공통). */
+    private static void applyText(Notice notice, NoticeDto.Request request) {
+        String title = request.getTitle() == null ? "" : request.getTitle().strip();
+        String body = request.getContent() == null ? "" : request.getContent().strip();
+        if (title.isEmpty() || body.isEmpty()) {
+            throw ApiException.badRequest("NOTICE_REQUIRED_FIELDS", "제목과 내용을 입력해 주세요");
+        }
+        if (charCount(title) > TITLE_MAX) {
+            throw ApiException.badRequest("NOTICE_TOO_LONG", "공지 제목은 " + TITLE_MAX + "자까지 쓸 수 있어요");
+        }
+        if (charCount(body) > CONTENT_MAX) {
+            throw ApiException.badRequest("NOTICE_TOO_LONG", "공지 내용은 " + CONTENT_MAX + "자까지 쓸 수 있어요");
+        }
+        notice.setTitle(title);
+        notice.setContent(body);
+    }
 
     private NoticeViewDto.View view(Notice n, Map<Integer, LocalDateTime> readBy, boolean owner, Integer myStaffId,
                                     Map<Integer, StoreWorker> active) {

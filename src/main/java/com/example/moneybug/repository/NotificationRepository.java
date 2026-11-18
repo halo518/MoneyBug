@@ -19,4 +19,10 @@ public interface NotificationRepository extends JpaRepository<Notification, Inte
     List<Notification> findByToUserIdAndReadFalse(Integer toUserId);
 
     List<Notification> findByToUserIdAndStoreIdAndReadFalse(Integer toUserId, Integer storeId);
+
+    /** 참조 대상(공지 등)이 지워질 때 그것을 가리키는 알림을 함께 지운다. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("delete from Notification n where n.type = :type and n.refId = :refId")
+    int deleteByTypeAndRefId(@org.springframework.data.repository.query.Param("type") Notification.Type type,
+                             @org.springframework.data.repository.query.Param("refId") Integer refId);
 }
