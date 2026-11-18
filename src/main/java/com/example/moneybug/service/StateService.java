@@ -30,7 +30,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
@@ -170,8 +169,8 @@ public class StateService {
         LocalDate today = TimeUtil.today();
         LocalDateTime now = LocalDateTime.now();
         // FE 시드와 같은 범위: 지난달 1일이 든 주의 월요일 ~ 3개월 뒤 말일
-        LocalDate from = today.minusMonths(1).withDayOfMonth(1).with(DayOfWeek.MONDAY);
-        LocalDate to = YearMonth.from(today).plusMonths(3).atEndOfMonth();
+        LocalDate from = StateWindow.shiftsFrom(today);
+        LocalDate to = StateWindow.shiftsTo(today);
 
         for (Store store : fullStores.values()) {
             boolean isOwner = store.getEmployer().getId().equals(userId);
