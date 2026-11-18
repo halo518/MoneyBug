@@ -67,4 +67,20 @@ class SaveShiftsBodyTest {
         assertThat(b.id()).isNull();
         assertThat(b.kind()).isEqualTo(Schedule.Kind.LEAVE);
     }
+
+    /** 보고서 07·23: null 원소·51자 파트·범위 밖 휴게는 서비스에 닿기 전에 400. */
+    @Test
+    void rejectsNullItemLongPartAndBadBreak() throws Exception {
+        String longPart = "ㄱ".repeat(51);
+        for (String body : java.util.List.of(
+                "{\"shifts\":[null]}",
+                "{\"shifts\":[{\"staffId\":45,\"date\":\"2026-12-09\",\"startMin\":600,\"endMin\":700,\"part\":\"" + longPart + "\"}]}",
+                "{\"shifts\":[{\"staffId\":45,\"date\":\"2026-12-09\",\"startMin\":600,\"endMin\":700,\"breakMin\":-1}]}")) {
+            mvc.perform(put("/api/v1/stores/1/schedules/2026-12/shifts")
+                            .header("Authorization", "Bearer " + jwt.createAccessToken(7L))
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isBadRequest());
+        }
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
 }

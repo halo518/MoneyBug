@@ -32,11 +32,19 @@ class MonthScheduleSaveShiftsTest {
     ScheduleDeleter deleter = mock(ScheduleDeleter.class);
     NotificationPublisher notifier = mock(NotificationPublisher.class);
     ScheduleAiService ai = mock(ScheduleAiService.class);
-    MonthScheduleService service = new MonthScheduleService(mock(StoreAccess.class), monthRepo,
+    StoreAccess access = mock(StoreAccess.class);
+    SubstituteRequestRepository subRepo = mock(SubstituteRequestRepository.class);
+    SubstituteApplicantRepository applicantRepo = mock(SubstituteApplicantRepository.class);
+    MonthScheduleService service = new MonthScheduleService(access, monthRepo,
             mock(ScheduleTemplateRepository.class), scheduleRepo, attendanceRepo, workerRepo,
             mock(StorePartRepository.class), mock(OverlapChecker.class), deleter, mock(ShiftService.class),
             ai, mock(StaffWageService.class), mock(StoreChangeHub.class),
             notifier, mock(PlatformTransactionManager.class));
+
+    {
+        service.subRepo = subRepo;
+        service.applicantRepo = applicantRepo;
+    }
 
     static Schedule shift(int id, StoreWorker sw, LocalDate d, int start, int end) {
         Schedule s = new Schedule();
@@ -86,6 +94,7 @@ class MonthScheduleSaveShiftsTest {
         LocalDate d3 = LocalDate.of(2026, 11, 3);
         Schedule mine = shift(123, sw, d3, 540, 1080);
         Schedule old = shift(200, left, LocalDate.of(2026, 11, 2), 540, 1080);
+        old.setBreakMin(30); // FE 는 받은 값 그대로 보낸다
         when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(sw));
         when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of(old, mine));
         when(attendanceRepo.findByScheduleIdIn(anyCollection())).thenReturn(List.of());
@@ -215,5 +224,231 @@ class MonthScheduleSaveShiftsTest {
         order.verify(monthRepo).lockStore(1);
         order.verify(monthRepo).findByStoreIdAndMonth(1, "2026-11");
         assertThat(ms.getAiComment()).isEqualTo("브리핑\n\n" + plan.comment());
+    }
+
+    static StoreWorker worker(int id, StoreWorker.Status status) {
+        StoreWorker sw = new StoreWorker();
+        sw.setId(id);
+        sw.setStatus(status);
+        com.example.moneybug.entity.User u = new com.example.moneybug.entity.User();
+        u.setName("직원" + id);
+        sw.setWorker(u);
+        return sw;
+    }
+
+    static com.example.moneybug.entity.User user(int id) {
+        com.example.moneybug.entity.User u = new com.example.moneybug.entity.User();
+        u.setId(id);
+        return u;
+    }
+
+    /** /me/state 범위: 2026-11-17 기준 지난달 1일(10/1)이 든 주의 월요일 9/28 ~ 2027-02-28. */
+    @Test
+    void stateWindowMatchesStateService() {
+        LocalDate today = LocalDate.of(2026, 11, 17);
+        assertThat(StateWindow.shiftsFrom(today)).isEqualTo(LocalDate.of(2026, 9, 28));
+        assertThat(StateWindow.shiftsTo(today)).isEqualTo(LocalDate.of(2027, 2, 28));
+        assertThat(StateWindow.contains(today, LocalDate.of(2026, 9, 27))).isFalse();
+        assertThat(StateWindow.contains(today, LocalDate.of(2026, 9, 29))).isTrue();
+    }
+
+    /**
+     * 보고서 07 [치명]: 두 달 전(오늘 2026-11 이면 9월)을 저장할 때 FE 가 받은 적 없는 앞부분 근무(9/5 연차, 9/10 휴무,
+     * 9/15 근무)는 목록에 없어도 지우지 않는다. 받은 근무(9/29)만 통째 저장 대상.
+     */
+    @Test
+    void doesNotDeleteShiftsOutsideStateWindow() {
+        java.time.YearMonth ym = java.time.YearMonth.from(TimeUtil.today()).minusMonths(2);
+        LocalDate from = StateWindow.shiftsFrom(TimeUtil.today());
+        StoreWorker sw = worker(21, StoreWorker.Status.ACTIVE);
+        Schedule leave = shift(1, sw, ym.atDay(5), 540, 1080);
+        leave.setKind(Schedule.Kind.LEAVE);
+        Schedule off = shift(2, sw, ym.atDay(10), 540, 1080);
+        off.setKind(Schedule.Kind.OFF);
+        Schedule work = shift(3, sw, ym.atDay(15), 540, 1080);
+        Schedule last = shift(4, sw, ym.atEndOfMonth(), 540, 1080);
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(sw));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of(leave, off, work, last));
+        when(attendanceRepo.findByScheduleIdIn(anyCollection())).thenReturn(List.of());
+
+        service.saveShifts(7, 1, ym.toString(), new MonthScheduleCommandDto.SaveShiftsRequest(List.of()));
+
+        verify(deleter, never()).delete(leave);
+        verify(deleter, never()).delete(off);
+        verify(deleter, never()).delete(work);
+        // 말일이 범위 안이면(FE 가 받았으면) 목록에서 빠진 것은 지운다.
+        verify(deleter, times(ym.atEndOfMonth().isBefore(from) ? 0 : 1)).delete(last);
+    }
+
+    /** 보고서 07 [높음]: 연차·휴무·미정도 24시간·휴게 범위를 본다. */
+    @Test
+    void validatesTimeAndBreakForEveryKind() {
+        StoreWorker sw = worker(45, StoreWorker.Status.ACTIVE);
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(sw));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of());
+        LocalDate d = LocalDate.of(2026, 12, 2);
+        for (var it : List.of(
+                new ShiftItem(null, 45, d, 0, 2880, "", 0, Schedule.Kind.LEAVE, false),
+                new ShiftItem(null, 45, d, 540, 1080, "", -10000, Schedule.Kind.LEAVE, false),
+                new ShiftItem(null, 45, d, 540, 1080, "", 9999, Schedule.Kind.OFF, false),
+                new ShiftItem(null, 45, d, 0, 2880, "", 0, Schedule.Kind.WORK, true))) {
+            assertThatThrownBy(() -> service.saveShifts(7, 1, "2026-12",
+                    new MonthScheduleCommandDto.SaveShiftsRequest(List.of(it)))).isInstanceOf(ApiException.class);
+        }
+        verify(scheduleRepo, never()).saveAll(any());
+    }
+
+    /** 보고서 07 [중간]: 퇴사자 근무는 그대로일 때만 받는다. 날짜를 옮기면 400, 재직자에게 넘기면 받는다. */
+    @Test
+    void leftWorkerShiftOnlyUnchangedOrHandedOver() {
+        StoreWorker left = worker(20, StoreWorker.Status.LEFT);
+        StoreWorker sw = worker(21, StoreWorker.Status.ACTIVE);
+        Schedule old = shift(446, left, LocalDate.of(2026, 11, 15), 540, 1080);
+        old.setBreakMin(30);
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(sw));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of(old));
+        when(attendanceRepo.findByScheduleIdIn(anyCollection())).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.saveShifts(7, 1, "2026-11", new MonthScheduleCommandDto.SaveShiftsRequest(
+                List.of(item("446", 20, LocalDate.of(2026, 11, 28), 540, 1080)))))
+                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("STAFF_NOT_FOUND"));
+        assertThat(old.getWorkDate()).isEqualTo(LocalDate.of(2026, 11, 15));
+
+        service.saveShifts(7, 1, "2026-11", new MonthScheduleCommandDto.SaveShiftsRequest(
+                List.of(item("446", 21, LocalDate.of(2026, 11, 28), 540, 1080))));
+        assertThat(old.getStoreWorker()).isSameAs(sw);
+    }
+
+    /** 보고서 07 [낮음]: DB part null 과 FE "" 는 같은 것 — 확정 달에 바뀐 것 없이 저장하면 알림 없음. */
+    @Test
+    void nullPartEqualsEmptyPart() {
+        StoreWorker sw = worker(21, StoreWorker.Status.ACTIVE);
+        Schedule cur = shift(692, sw, LocalDate.of(2026, 12, 9), 540, 600);
+        cur.setPart(null);
+        cur.setBreakMin(0);
+        MonthSchedule ms = new MonthSchedule();
+        ms.setStatus(MonthSchedule.Status.CONFIRMED);
+        when(monthRepo.findByStoreIdAndMonth(1, "2026-12")).thenReturn(Optional.of(ms));
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(sw));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of(cur));
+        when(attendanceRepo.findByScheduleIdIn(anyCollection())).thenReturn(List.of());
+
+        service.saveShifts(7, 1, "2026-12", new MonthScheduleCommandDto.SaveShiftsRequest(List.of(
+                new ShiftItem("692", 21, LocalDate.of(2026, 12, 9), 540, 600, "", 0, Schedule.Kind.WORK, false))));
+
+        verifyNoInteractions(notifier);
+    }
+
+    /** 보고서 07 [낮음]: 확정된 달에 새 시간 미정 근무는 409. 3개월 뒤를 넘는 달은 400. */
+    @Test
+    void rejectsTbdInConfirmedMonthAndTooFarMonth() {
+        StoreWorker sw = worker(21, StoreWorker.Status.ACTIVE);
+        MonthSchedule ms = new MonthSchedule();
+        ms.setStatus(MonthSchedule.Status.CONFIRMED);
+        when(monthRepo.findByStoreIdAndMonth(1, "2026-12")).thenReturn(Optional.of(ms));
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(sw));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.saveShifts(7, 1, "2026-12", new MonthScheduleCommandDto.SaveShiftsRequest(
+                List.of(new ShiftItem(null, 21, LocalDate.of(2026, 12, 5), 540, 1080, "", 60, Schedule.Kind.WORK, true)))))
+                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("TBD_IN_CONFIRMED"));
+
+        String far = java.time.YearMonth.from(TimeUtil.today()).plusMonths(4).toString();
+        assertThatThrownBy(() -> service.saveShifts(7, 1, far, new MonthScheduleCommandDto.SaveShiftsRequest(List.of())))
+                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("MONTH_TOO_FAR"));
+        assertThatThrownBy(() -> service.autofill(7, 1, far))
+                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("MONTH_TOO_FAR"));
+    }
+
+    /** 보고서 13 [높음]: 월 저장으로 담당자·시간이 바뀌면 진행 중 대타 요청을 취소하고 요청자·지원자에게 알린다. */
+    @Test
+    void changedShiftCancelsPendingSubstitute() {
+        StoreWorker a = worker(36, StoreWorker.Status.ACTIVE);
+        StoreWorker b = worker(35, StoreWorker.Status.ACTIVE);
+        Schedule cur = shift(48, a, LocalDate.of(2026, 12, 20), 720, 960);
+        cur.setBreakMin(30);
+        var r = new com.example.moneybug.entity.SubstituteRequest();
+        r.setId(21);
+        r.setRequester(user(100));
+        r.setTaker(user(101));
+        r.setStatus(com.example.moneybug.entity.SubstituteRequest.Status.ACCEPTED);
+        var ap = new com.example.moneybug.entity.SubstituteApplicant();
+        ap.setApplicant(user(101));
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(a, b));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of(cur));
+        when(attendanceRepo.findByScheduleIdIn(anyCollection())).thenReturn(List.of());
+        when(subRepo.findByScheduleIdAndStatusIn(eq(48), anyCollection())).thenReturn(List.of(r));
+        when(applicantRepo.findByRequestId(21)).thenReturn(List.of(ap));
+
+        service.saveShifts(7, 1, "2026-12", new MonthScheduleCommandDto.SaveShiftsRequest(List.of(
+                item("48", 35, LocalDate.of(2026, 12, 20), 720, 960))));
+
+        assertThat(r.getStatus()).isEqualTo(com.example.moneybug.entity.SubstituteRequest.Status.CANCELLED);
+        verify(notifier).send(any(), eq(r.getRequester()), eq(Notification.Type.SUB), any(), eq("12/20 12:00–16:00"), eq(21));
+        verify(notifier).send(any(), eq(ap.getApplicant()), eq(Notification.Type.SUB), any(), any(), eq(21));
+        verify(notifier, times(2)).send(any(), any(), any(), any(), any(), any());
+    }
+
+    /** 바뀐 것 없는 근무의 대타 요청은 그대로 둔다. */
+    @Test
+    void unchangedShiftKeepsSubstitute() {
+        StoreWorker a = worker(36, StoreWorker.Status.ACTIVE);
+        Schedule cur = shift(48, a, LocalDate.of(2026, 12, 20), 720, 960);
+        cur.setBreakMin(30);
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of(a));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of(cur));
+        when(attendanceRepo.findByScheduleIdIn(anyCollection())).thenReturn(List.of());
+
+        service.saveShifts(7, 1, "2026-12", new MonthScheduleCommandDto.SaveShiftsRequest(List.of(
+                item("48", 36, LocalDate.of(2026, 12, 20), 720, 960))));
+
+        verifyNoInteractions(subRepo);
+    }
+
+    /** 보고서 07·15 [중간]: 확정된 달 삭제는 근무가 지워진 재직 직원에게 알린다. 작성 중이면 알림 없음. */
+    @Test
+    void deletingConfirmedMonthNotifiesStaff() {
+        StoreWorker sw = worker(21, StoreWorker.Status.ACTIVE);
+        StoreWorker left = worker(20, StoreWorker.Status.LEFT);
+        Schedule s1 = shift(1, sw, LocalDate.of(2026, 12, 3), 540, 1080);
+        Schedule s2 = shift(2, sw, LocalDate.of(2026, 12, 4), 540, 1080);
+        Schedule s3 = shift(3, left, LocalDate.of(2026, 12, 5), 540, 1080);
+        MonthSchedule ms = new MonthSchedule();
+        ms.setStatus(MonthSchedule.Status.CONFIRMED);
+        when(monthRepo.findByStoreIdAndMonth(1, "2026-12")).thenReturn(Optional.of(ms));
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of(s1, s2, s3));
+        when(attendanceRepo.findByScheduleIdIn(anyCollection())).thenReturn(List.of());
+
+        service.delete(7, 1, "2026-12");
+
+        verify(deleter).delete(s1);
+        verify(monthRepo).delete(ms);
+        verify(notifier).sendToStaff(any(), eq(sw), eq(Notification.Type.SUB), eq("12월 확정 근무표가 바뀌었어요"),
+                eq("12/3, 12/4"), isNull());
+        verifyNoMoreInteractions(notifier);
+    }
+
+    /** 보고서 08·24: 만들기·자동 채우기·저장·확정·삭제는 어떤 읽기보다 먼저 매장 잠금을 잡는다. */
+    @Test
+    void storeLockComesFirst() {
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of());
+        String m = java.time.YearMonth.from(TimeUtil.today()).plusMonths(1).toString();
+        List<Runnable> calls = List.of(
+                () -> service.create(7, 1, new MonthScheduleCommandDto.CreateRequest(m, false)),
+                () -> service.autofill(7, 1, m),
+                () -> service.saveShifts(7, 1, m, new MonthScheduleCommandDto.SaveShiftsRequest(List.of())),
+                () -> service.confirm(7, 1, m),
+                () -> service.delete(7, 1, m));
+        for (Runnable call : calls) {
+            clearInvocations(monthRepo, access, scheduleRepo, workerRepo);
+            try {
+                call.run();
+            } catch (RuntimeException ignored) {
+                // confirm 은 메타가 없어 404 — 순서만 본다
+            }
+            var order = inOrder(monthRepo, access);
+            order.verify(monthRepo).lockStore(1);
+            order.verify(access).requireOwner(7, 1);
+        }
     }
 }
