@@ -127,7 +127,7 @@ public class DocumentService {
     private static final java.util.regex.Pattern CONTACT = java.util.regex.Pattern.compile("[0-9-]*");
 
     /**
-     * PATCH /me/profile — 보낸 키(null 이 아닌 것)만 반영. fullName 은 trim 뒤 1~50자, contact 는 숫자·- 20자 이하,
+     * PATCH /me/profile — 보낸 키(null 이 아닌 것)만 반영. fullName 은 trim 뒤 1~50자(name 도 같은 값으로), contact 는 숫자·- 20자 이하,
      * 빈 문자열이면 지운다. 커밋 뒤 내 매장(소유·재직·대기)에 변경 신호.
      */
     public UserDto.Response updateProfile(Integer userId, UserDto.ProfileRequest request) {
@@ -142,7 +142,10 @@ public class DocumentService {
         if (contact != null && (contact.length() > 20 || !CONTACT.matcher(contact).matches())) {
             throw ApiException.badRequest("INVALID_CONTACT", "연락처는 숫자와 - 로 20자 이하로 입력해 주세요");
         }
-        if (fullName != null) user.setFullName(fullName);
+        if (fullName != null) {
+            user.setFullName(fullName);
+            user.setName(fullName); // FE 는 대부분 화면·아바타 글자에 name 을 쓴다
+        }
         if (contact != null) user.setContact(contact.isEmpty() ? null : contact);
         afterCertSaved(null, null, "", myStoreIds(userId));
         return UserDto.Response.from(user);

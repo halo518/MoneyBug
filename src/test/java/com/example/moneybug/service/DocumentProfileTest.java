@@ -120,8 +120,11 @@ class DocumentProfileTest {
         assertNull(r.getContact());
         assertEquals("김태우", r.getFullName());
 
+        assertEquals("u7", r.getName()); // fullName 을 안 보내면 name 도 그대로
+
         r = service.updateProfile(7, req("  이태우 ", null));
         assertEquals("이태우", r.getFullName());
+        assertEquals("이태우", r.getName());
         assertNull(r.getContact());
 
         r = service.updateProfile(7, req(null, "010-9999-0000"));
