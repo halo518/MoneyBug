@@ -55,7 +55,7 @@ public class StorePartDto {
     }
 
     /** PUT /stores/{id}/parts. id 는 숫자 또는 문자열, 새 파트는 null·"" . */
-    public record SaveRequest(@NotNull List<Item> parts) {}
+    public record SaveRequest(@NotNull List<@NotNull(message = "비어 있는 파트가 있어요") Item> parts) {}
 
     public record Item(String id, String name, StorePart.Tone tone, Integer startMin, Integer endMin,
                        Integer breakMin, Integer need) {}

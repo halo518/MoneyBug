@@ -70,7 +70,7 @@ public class StoreController {
         return storeService.updateSettings(userId.intValue(), storeId, request);
     }
 
-    @Operation(summary = "파트별 필요 인원 수정", description = "파트(시작 시각순) 순서대로 needs 를 반영해요. 인덱스가 모자라면 무시, 음수는 400. 권한: 사장님")
+    @Operation(summary = "파트별 필요 인원 수정", description = "파트(시작 시각순) 순서대로 needs 를 반영해요. 개수가 파트 수와 다르거나 0~99 밖이면 400. 권한: 사장님")
     @PutMapping("/{storeId}/parts/needs")
     public List<StorePartDto.Response> updatePartNeeds(@AuthenticationPrincipal Long userId,
                                                        @PathVariable Integer storeId,
@@ -78,20 +78,16 @@ public class StoreController {
         return storeService.updatePartNeeds(userId.intValue(), storeId, request.needs());
     }
 
-    /** 결과별 상태 코드: REQUESTED 201 / NOT_FOUND 404 / ALREADY_MEMBER, ALREADY_PENDING 409 */
-    @Operation(summary = "매장 코드로 가입 신청", description = "코드는 대소문자·하이픈 무시. 결과: REQUESTED 201 / NOT_FOUND 404 / ALREADY_MEMBER·ALREADY_PENDING 409. 사장님에게 가입 알림이 가요.")
+    /** 결과별 상태 코드: REQUESTED 201 / 나머지(NOT_FOUND·ALREADY_MEMBER·ALREADY_PENDING) 200. FE 는 2xx 본문의 result 로 분기한다. */
+    @Operation(summary = "매장 코드로 가입 신청", description = "코드는 대소문자·하이픈 무시. 결과(result): requested 201 / notFound·alreadyMember·alreadyPending 200. requested 일 때만 사장님에게 가입 알림이 가요.")
     @PostMapping("/join-requests")
     public ResponseEntity<StoreDetailDto.JoinResponse> requestJoin(@AuthenticationPrincipal Long userId,
                                                                    @Valid @RequestBody StoreDetailDto.JoinRequest request) {
         StoreDetailDto.JoinResponse response = storeService.requestJoin(userId.intValue(), request.code());
+        if (response.result() != StoreDetailDto.JoinResult.REQUESTED) return ResponseEntity.ok(response);
         // 경로에 storeId 가 없어 인터셉터가 못 잡는다. 사장님 화면에 가입 신청이 바로 보이게.
-        if (response.result() == StoreDetailDto.JoinResult.REQUESTED) changeHub.bump(response.store().id());
-        HttpStatus status = switch (response.result()) {
-            case REQUESTED -> HttpStatus.CREATED;
-            case NOT_FOUND -> HttpStatus.NOT_FOUND;
-            case ALREADY_MEMBER, ALREADY_PENDING -> HttpStatus.CONFLICT;
-        };
-        return ResponseEntity.status(status).body(response);
+        changeHub.bump(response.store().id());
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     @Operation(summary = "매장 코드 조회", description = "직원 초대용 코드. 권한: 사장님")
