@@ -4,6 +4,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import com.example.moneybug.dto.DashboardDto;
 import com.example.moneybug.service.DashboardService;
+import com.example.moneybug.service.TimeUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -29,6 +30,6 @@ public class DashboardController {
     public DashboardDto.Response dashboard(
             @AuthenticationPrincipal Long userId, @PathVariable Integer storeId,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return dashboardService.dashboard(userId.intValue(), storeId, date != null ? date : LocalDate.now());
+        return dashboardService.dashboard(userId.intValue(), storeId, date != null ? date : TimeUtil.today());
     }
 }

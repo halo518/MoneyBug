@@ -13,6 +13,9 @@ import java.util.List;
  */
 public final class FixedShiftPlanner {
 
+    /** 연소자: 06:00~22:00, 하루 7시간. GapFiller 와 같은 기준. */
+    static final int MINOR_FROM = 360, MINOR_TO = 1320, MINOR_DAY_MIN = 420;
+
     private FixedShiftPlanner() {}
 
     /** 영업시간(분). 마감이 1440 을 넘으면 익일. */
@@ -84,6 +87,7 @@ public final class FixedShiftPlanner {
                 if (p.partTimer()) {
                     List<String> names = at(p.fixedParts(), dow);
                     if (names == null) continue;
+                    int dayWork = 0; // 연소자 하루 7시간 판단용
                     for (PartDef part : sorted) {
                         if (!names.contains(part.name())) continue;
                         // 그날 영업시간으로 자른다. 잘렸으면 휴게도 잘린 길이로 다시 정한다.
@@ -95,8 +99,22 @@ public final class FixedShiftPlanner {
                             e = Math.min(part.endMin(), hours.close(prev) - 1440);
                         }
                         if (e <= s) continue;
+                        if (p.minor()) {
+                            // 연소자(근로기준법 제69·70조): 06:00~22:00 안으로, 하루 실근로 7시간까지 자른다.
+                            s = Math.max(s, MINOR_FROM);
+                            e = Math.min(e, MINOR_TO);
+                            if (e <= s) continue;
+                            int left = MINOR_DAY_MIN - dayWork;
+                            if (left <= 0) continue;
+                            boolean same = s == part.startMin() && e == part.endMin();
+                            if (e - s - (same ? part.breakMin() : minBreakFor(e - s)) > left) {
+                                e = s + left + requiredBreak(left);
+                            }
+                        }
                         boolean cut = s != part.startMin() || e != part.endMin();
-                        out.add(new Planned(p.id(), date, s, e, part.name(), cut ? minBreakFor(e - s) : part.breakMin()));
+                        int brk = cut ? minBreakFor(e - s) : part.breakMin();
+                        dayWork += e - s - brk;
+                        out.add(new Planned(p.id(), date, s, e, part.name(), brk));
                     }
                 } else {
                     WorkHours w = at(p.workHours(), dow);

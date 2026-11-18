@@ -13,6 +13,11 @@ spring:
   # ==========================================
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      # 동시 요청이 많을 때 늘린다. MySQL max_connections(기본 151) 안에서.
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      # MySQL 기본 REPEATABLE READ 는 먼저 읽은 스냅샷 때문에 잠근 뒤 확인(check-then-act)이 옛 값을 본다.
+      transaction-isolation: TRANSACTION_READ_COMMITTED
 
   # ==========================================
   # JPA (Hibernate)
@@ -26,11 +31,21 @@ spring:
     hibernate:
       # update: Entity 클래스 기준으로 DB 테이블을 자동 생성/수정한다.
       ddl-auto: update
+    # 화면 응답까지 지연 로딩을 허용한다(기존 코드가 기댄다). 대신 아래 handling_mode 로 트랜잭션이 끝나면 커넥션을 돌려준다.
+    open-in-view: true
     # 실행되는 SQL 을 콘솔에 출력한다. 기본은 끔. 로컬 디버깅: SHOW_SQL=true
     show-sql: ${SHOW_SQL:false}
     properties:
       hibernate:
         format_sql: true
+        # 기본(DELAYED_ACQUISITION_AND_HOLD)은 OSIV 가 요청 끝까지 커넥션을 쥔다. 롱 폴링(/me/changes, 최대 25초)이
+        # 그동안 풀을 다 잡아 API 전체가 멈췄다(QA 2026-11-17 #21). 트랜잭션이 끝나면 풀에 돌려준다.
+        connection:
+          handling_mode: DELAYED_ACQUISITION_AND_RELEASE_AFTER_TRANSACTION
+  # 실수(10320.5)를 정수 필드에 넣으면 소수를 버리지 않고 400.
+  jackson:
+    deserialization:
+      accept-float-as-int: false
 
 logging:
   level:

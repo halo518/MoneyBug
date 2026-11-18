@@ -19,14 +19,18 @@ public class ShiftCommandDto {
     /** POST /shifts — 여러 명이면 같은 근무를 명수만큼 생성. */
     public record CreateRequest(
             @NotNull LocalDate date,
-            @NotNull @Min(0) @Max(1439) Integer startMin,
-            @NotNull @Min(0) @Max(1439) Integer endMin,
-            @Size(max = 50) String part,
-            @NotEmpty(message = "근로자를 한 명 이상 골라 주세요") List<Integer> staffIds,
+            @NotNull @Min(value = 0, message = "시작 시각이 올바르지 않아요")
+            @Max(value = 1439, message = "시작 시각이 올바르지 않아요") Integer startMin,
+            /** 1440 = 24:00 (파트·월 저장과 같다) */
+            @NotNull @Min(value = 0, message = "종료 시각이 올바르지 않아요")
+            @Max(value = 1440, message = "종료 시각이 올바르지 않아요") Integer endMin,
+            @Size(max = 50, message = "파트 이름은 50자까지예요") String part,
+            @NotEmpty(message = "근로자를 한 명 이상 골라 주세요")
+            List<@NotNull(message = "근로자를 한 명 이상 골라 주세요") Integer> staffIds,
             /** 생략 시 자동 (480분 이상 60, 240분 이상 30, 그 외 0) */
-            @Min(0) Integer breakMin,
+            @Min(value = 0, message = "휴게 시간이 올바르지 않아요") Integer breakMin,
             /** >1 이면 매주 같은 요일로 반복 생성. 생략 시 1 */
-            @Min(1) Integer repeatWeeks,
+            @Min(value = 1, message = "반복은 1주 이상이어야 해요") Integer repeatWeeks,
             /** 생략 시 WORK */
             Schedule.Kind kind,
             Boolean timeTbd) {}
@@ -37,10 +41,12 @@ public class ShiftCommandDto {
     public record UpdateRequest(
             Integer staffId,
             LocalDate date,
-            @Min(0) @Max(1439) Integer startMin,
-            @Min(0) @Max(1439) Integer endMin,
-            @Size(max = 50) String part,
-            @Min(0) Integer breakMin,
+            @Min(value = 0, message = "시작 시각이 올바르지 않아요")
+            @Max(value = 1439, message = "시작 시각이 올바르지 않아요") Integer startMin,
+            @Min(value = 0, message = "종료 시각이 올바르지 않아요")
+            @Max(value = 1440, message = "종료 시각이 올바르지 않아요") Integer endMin,
+            @Size(max = 50, message = "파트 이름은 50자까지예요") String part,
+            @Min(value = 0, message = "휴게 시간이 올바르지 않아요") Integer breakMin,
             Schedule.Kind kind,
             Boolean timeTbd) {}
 
@@ -50,8 +56,8 @@ public class ShiftCommandDto {
     /** auto-fill, plan apply 결과 { "added": n } */
     public record AddedResponse(int added) {}
 
-    /** POST /schedule/template */
-    public record TemplateRequest(@NotNull List<Integer> needs, boolean copyLastWeek) {}
+    /** POST /schedule/template. copyLastWeek 생략하면 false */
+    public record TemplateRequest(@NotNull List<Integer> needs, Boolean copyLastWeek) {}
 
     public record CopiedResponse(int copied) {}
 

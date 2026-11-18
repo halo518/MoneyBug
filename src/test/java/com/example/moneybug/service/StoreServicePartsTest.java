@@ -97,7 +97,7 @@ class StoreServicePartsTest {
     }
 
     @Test
-    void removedPartKeepsShiftNameAndNewPartIsSaved() {
+    void removedPartClearsShiftAndTemplatePartAndNewPartIsSaved() {
         List<StorePart> saved = new ArrayList<>();
         when(storePartRepository.save(any(StorePart.class))).thenAnswer(i -> {
             saved.add(i.getArgument(0));
@@ -105,9 +105,97 @@ class StoreServicePartsTest {
         });
         service.savePartList(1, 10, List.of(item("1", "오픈", 480, 720), item("", "저녁", 1100, 1300)));
         org.mockito.Mockito.verify(storePartRepository).delete(close);
-        assertEquals("오픈", shift.getPart());
+        assertEquals("오픈", shift.getPart()); // 남은 파트 근무는 그대로
         assertEquals(1, saved.size());
         assertEquals("저녁", saved.get(0).getName());
+    }
+
+    @Test
+    void deletedPartShiftsAndTemplatesBecomePartless() {
+        Schedule closeShift = new Schedule();
+        closeShift.setPart("마감");
+        when(scheduleRepository.findByStoreAndPartIn(anyInt(), anyCollection())).thenReturn(List.of(shift, closeShift));
+        com.example.moneybug.entity.ScheduleTemplate t = new com.example.moneybug.entity.ScheduleTemplate();
+        t.setPatternJson(com.example.moneybug.dto.ScheduleTemplateDto.toJson(List.of(
+                new com.example.moneybug.dto.ScheduleTemplateDto.Shift(0, 5, 1020, 1320, "마감", 30, Schedule.Kind.WORK, false),
+                new com.example.moneybug.dto.ScheduleTemplateDto.Shift(1, 5, 480, 720, "오픈", 30, Schedule.Kind.WORK, false))));
+        when(scheduleTemplateRepository.findByStoreIdOrderByIdAsc(10)).thenReturn(List.of(t));
+
+        service.savePartList(1, 10, List.of(item("1", "오픈", 480, 720)));
+
+        assertEquals("", closeShift.getPart());
+        assertEquals("오픈", shift.getPart());
+        var pattern = com.example.moneybug.dto.ScheduleTemplateDto.parse(t.getPatternJson());
+        assertEquals("", pattern.get(0).part());
+        assertEquals("오픈", pattern.get(1).part());
+    }
+
+    @Test
+    void partNamesDifferingOnlyByCaseOrWidthAreDuplicates() {
+        var ex = assertThrows(ApiException.class, () -> service.savePartList(1, 10,
+                List.of(item("", "Night", 0, 60), item("", "night", 60, 120))));
+        assertEquals("DUPLICATE_PART", ex.getCode());
+        ex = assertThrows(ApiException.class, () -> service.savePartList(1, 10,
+                List.of(item("", "A", 0, 60), item("", "Ａ", 60, 120))));
+        assertEquals("DUPLICATE_PART", ex.getCode());
+    }
+
+    @Test
+    void partRangeBreakNeedAndNullItem() {
+        // 24:00 끝(1440)과 정확히 24시간은 허용
+        service.savePartList(1, 10, List.of(new StorePartDto.Item("1", "종일", null, 0, 1440, 60, 99)));
+        java.util.function.Consumer<StorePartDto.Item> bad = it -> {
+            var ex = assertThrows(ApiException.class, () -> service.savePartList(1, 10, java.util.Arrays.asList(it)));
+            assertEquals("INVALID_PART", ex.getCode());
+        };
+        bad.accept(new StorePartDto.Item("1", "48h", null, 0, 2880, 0, 1));    // 24시간 초과
+        bad.accept(new StorePartDto.Item("1", "휴게", null, 0, 60, 60, 1));     // 휴게 ≥ 길이
+        bad.accept(new StorePartDto.Item("1", "인원", null, 0, 60, 0, 100));    // need > 99
+        bad.accept(null);                                                     // null 원소
+    }
+
+    @Test
+    void needsCapAndLength() {
+        var ex = assertThrows(ApiException.class, () -> service.updatePartNeeds(1, 10, List.of(1)));
+        assertEquals("INVALID_NEED", ex.getCode());
+        ex = assertThrows(ApiException.class, () -> service.updatePartNeeds(1, 10, List.of(1, 100)));
+        assertEquals("INVALID_NEED", ex.getCode());
+        assertEquals(99, service.updatePartNeeds(1, 10, List.of(0, 99)).get(1).getNeed());
+    }
+
+    @Test
+    void storeNameAndAddressLengthCheckedAfterTrim() {
+        StoreDto.UpdateRequest ok = new StoreDto.UpdateRequest();
+        ok.setStoreName("  " + "가".repeat(100) + "  ");
+        service.update(1, 10, ok);
+        assertEquals("가".repeat(100), store.getStoreName());
+
+        StoreDto.UpdateRequest longName = new StoreDto.UpdateRequest();
+        longName.setStoreName("가".repeat(101));
+        var ex = assertThrows(ApiException.class, () -> service.update(1, 10, longName));
+        assertEquals("상호명은 100자 이하로 입력해 주세요", ex.getMessage());
+
+        StoreDto.UpdateRequest longAddr = new StoreDto.UpdateRequest();
+        longAddr.setAddress("a".repeat(256));
+        ex = assertThrows(ApiException.class, () -> service.update(1, 10, longAddr));
+        assertEquals("주소는 255자 이하로 입력해 주세요", ex.getMessage());
+
+        StoreDto.SettingsRequest s = new StoreDto.SettingsRequest();
+        s.setStoreName("가".repeat(101));
+        ex = assertThrows(ApiException.class, () -> service.updateSettings(1, 10, s));
+        assertEquals("상호명은 100자 이하로 입력해 주세요", ex.getMessage());
+    }
+
+    @Test
+    void syncSizeLocksStoreAndSkipsUnchangedValue() {
+        when(storeWorkerRepository.countByStoreIdAndStatus(10, StoreWorker.Status.ACTIVE)).thenReturn(5L);
+        store.setSizeMode(Store.SizeMode.AUTO);
+        store.setUnderFive(true);
+        service.syncSize(store);
+        assertFalse(store.isUnderFive());
+        var order = org.mockito.Mockito.inOrder(storeRepository, storeWorkerRepository);
+        order.verify(storeRepository).findByIdForUpdate(10);
+        order.verify(storeWorkerRepository).countByStoreIdAndStatus(10, StoreWorker.Status.ACTIVE);
     }
 
     @Test

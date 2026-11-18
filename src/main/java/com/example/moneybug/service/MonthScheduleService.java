@@ -12,12 +12,16 @@ import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.entity.ScheduleTemplate;
 import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StoreWorker;
+import com.example.moneybug.entity.SubstituteApplicant;
+import com.example.moneybug.entity.SubstituteRequest;
 import com.example.moneybug.repository.AttendanceRepository;
 import com.example.moneybug.repository.MonthScheduleRepository;
 import com.example.moneybug.repository.ScheduleRepository;
 import com.example.moneybug.repository.ScheduleTemplateRepository;
 import com.example.moneybug.repository.StorePartRepository;
 import com.example.moneybug.repository.StoreWorkerRepository;
+import com.example.moneybug.repository.SubstituteApplicantRepository;
+import com.example.moneybug.repository.SubstituteRequestRepository;
 import com.example.moneybug.service.FixedShiftPlanner.Existing;
 import com.example.moneybug.service.FixedShiftPlanner.PartDef;
 import com.example.moneybug.service.FixedShiftPlanner.Person;
@@ -25,6 +29,7 @@ import com.example.moneybug.service.FixedShiftPlanner.Planned;
 import com.example.moneybug.service.FixedShiftPlanner.StoreHours;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -68,6 +73,9 @@ public class MonthScheduleService {
     private final StoreChangeHub changeHub;
     private final NotificationPublisher notifier;
     private final TransactionTemplate tx;
+    // 생성자 대신 필드 주입: 다른 브랜치가 같은 생성자를 고쳐도 충돌하지 않게.
+    @Autowired SubstituteRequestRepository subRepo;
+    @Autowired SubstituteApplicantRepository applicantRepo;
     private final ExecutorService executor = Executors.newFixedThreadPool(2, r -> {
         Thread t = new Thread(r, "schedule-ai");
         t.setDaemon(true);
@@ -107,6 +115,7 @@ public class MonthScheduleService {
 
     public MonthScheduleDto.Response create(Integer userId, Integer storeId,
                                             MonthScheduleCommandDto.CreateRequest req) {
+        monthRepo.lockStore(storeId); // 동시 만들기: 메타 중복(500)·고정 근무 중복을 막는다
         Store store = access.requireOwner(userId, storeId);
         YearMonth ym = writableMonth(req.month());
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, req.month()).orElse(null);
@@ -124,11 +133,13 @@ public class MonthScheduleService {
     }
 
     public void autofill(Integer userId, Integer storeId, String month) {
+        monthRepo.lockStore(storeId); // 동시 자동 채우기가 서로의 삽입을 못 보고 중복으로 넣지 않게
         Store store = access.requireOwner(userId, storeId);
+        YearMonth ym = writableMonth(month);
         if (isConfirmed(storeId, month)) {
             throw ApiException.conflict("ALREADY_CONFIRMED", "확정된 근무표는 자동 채우기를 쓸 수 없어요");
         }
-        fill(store, parseMonth(month));
+        fill(store, ym);
         monthRepo.findByStoreIdAndMonth(storeId, month).ifPresent(ms -> ms.setUpdatedAt(java.time.LocalDateTime.now()));
     }
 
@@ -147,9 +158,11 @@ public class MonthScheduleService {
 
     public MonthScheduleCommandDto.SaveShiftsResponse saveShifts(Integer userId, Integer storeId, String month,
                                                                  MonthScheduleCommandDto.SaveShiftsRequest req) {
+        // 같은 매장의 동시 저장·확정을 줄 세운다. 읽기보다 먼저 잡아야 앞 저장의 결과를 본다.
+        monthRepo.lockStore(storeId);
         Store store = access.requireOwner(userId, storeId);
-        monthRepo.lockStore(storeId); // 같은 매장의 동시 저장·확정을 줄 세운다
-        YearMonth ym = parseMonth(month);
+        YearMonth ym = writableMonth(month); // 지난 달은 그대로 고칠 수 있고, 3개월 뒤를 넘는 달만 막는다
+        LocalDate today = TimeUtil.today();
         LocalDate first = ym.atDay(1);
         LocalDate last = ym.atEndOfMonth();
         Map<Integer, StoreWorker> active = workerRepo.findByStoreIdAndStatus(storeId, StoreWorker.Status.ACTIVE)
@@ -179,10 +192,6 @@ public class MonthScheduleService {
         for (MonthScheduleCommandDto.ShiftItem it : req.shifts()) {
             Integer id = numericId(it.id());
             Schedule cur = id == null ? null : mine.get(id);
-            StoreWorker sw = active.get(it.staffId());
-            // 퇴사자의 지난 근무도 목록에 그대로 실려 온다. 담당자가 그대로면 받고, 새로 배정하는 것만 막는다.
-            if (sw == null && cur != null && cur.getStoreWorker().getId().equals(it.staffId())) sw = cur.getStoreWorker();
-            if (sw == null) throw ApiException.badRequest("STAFF_NOT_FOUND", "재직 중인 직원이 아니에요");
             if (it.date().isBefore(first) || it.date().isAfter(last)) {
                 throw ApiException.badRequest("DATE_OUT_OF_MONTH", month + " 근무표에 다른 달 날짜가 섞여 있어요");
             }
@@ -190,12 +199,24 @@ public class MonthScheduleService {
                 throw ApiException.badRequest("INVALID_TIME", "근무 시각이 올바르지 않아요");
             }
             Schedule.Kind kind = it.kind() != null ? it.kind() : Schedule.Kind.WORK;
+            boolean tbd = Boolean.TRUE.equals(it.timeTbd());
             int length = (it.endMin() <= it.startMin() ? it.endMin() + 1440 : it.endMin()) - it.startMin();
-            if (kind == Schedule.Kind.WORK && !Boolean.TRUE.equals(it.timeTbd())) {
-                if (length > 1440) throw ApiException.badRequest("INVALID_TIME", "근무는 24시간을 넘길 수 없어요");
-                if (it.breakMin() != null && (it.breakMin() < 0 || it.breakMin() > length)) {
-                    throw ApiException.badRequest("INVALID_BREAK", "휴게 시간이 올바르지 않아요");
-                }
+            // 연차도 시간만큼 유급이라 종류와 관계없이 같은 범위를 본다.
+            if (length > 1440) throw ApiException.badRequest("INVALID_TIME", "근무는 24시간을 넘길 수 없어요");
+            if (it.breakMin() != null && (it.breakMin() < 0 || it.breakMin() > length)) {
+                throw ApiException.badRequest("INVALID_BREAK", "휴게 시간이 올바르지 않아요");
+            }
+            int breakMin = it.breakMin() != null ? it.breakMin()
+                    : ScheduleDto.defaultBreakMin(it.startMin(), it.endMin());
+            StoreWorker sw = active.get(it.staffId());
+            // 퇴사자의 지난 근무도 목록에 그대로 실려 온다. 아무것도 안 바뀌었을 때만 받고, 옮기거나 새로 배정하는 것은 막는다.
+            if (sw == null && cur != null && signature(cur).equals(signature(it.staffId(), it.date(), it.startMin(),
+                    it.endMin(), it.part(), breakMin, kind, tbd))) {
+                sw = cur.getStoreWorker();
+            }
+            if (sw == null) throw ApiException.badRequest("STAFF_NOT_FOUND", "재직 중인 직원이 아니에요");
+            if (confirmed && tbd && !(cur != null && cur.isTimeTbd())) {
+                throw ApiException.conflict("TBD_IN_CONFIRMED", "확정된 근무표에는 시간 미정 근무를 넣을 수 없어요");
             }
             if (cur != null) kept.add(cur.getId());
             if (cur != null && withAttendance.contains(cur.getId())) {
@@ -212,16 +233,22 @@ public class MonthScheduleService {
             Schedule s = cur != null ? cur : new Schedule();
             StoreWorker prevStaff = cur != null ? cur.getStoreWorker() : null;
             LocalDate prevDate = cur != null ? cur.getWorkDate() : null;
+            String prevLabel = cur != null ? TimeUtil.label(cur) : null;
+            boolean wasWork = cur != null && cur.isWork();
             s.setStoreWorker(sw);
             s.setWorkDate(it.date());
             s.setStartMin(it.startMin());
             s.setEndMin(it.endMin());
             s.setPart(it.part());
-            s.setBreakMin(it.breakMin() != null ? it.breakMin()
-                    : ScheduleDto.defaultBreakMin(it.startMin(), it.endMin()));
+            s.setBreakMin(breakMin);
             s.setKind(kind);
-            s.setTimeTbd(Boolean.TRUE.equals(it.timeTbd()));
+            s.setTimeTbd(tbd);
             if (cur == null) toCreate.add(s);
+            // ShiftService.update 와 같이: 담당자·날짜·시간·종류가 바뀌면 진행 중 대타 요청은 더 이상 맞지 않는다.
+            if (cur != null && (!prevStaff.getId().equals(sw.getId()) || !prevLabel.equals(TimeUtil.label(s))
+                    || wasWork != s.isWork())) {
+                cancelPendingSubs(store, cur, prevLabel);
+            }
             if (confirmed && (cur == null || !before.get(cur.getId()).equals(signature(s)))) {
                 if (prevStaff != null) changed.add(prevStaff, prevDate);
                 changed.add(sw, it.date());
@@ -229,6 +256,8 @@ public class MonthScheduleService {
         }
         for (Schedule s : mine.values()) {
             if (kept.contains(s.getId())) continue;
+            // /me/state 기간 밖 근무는 FE 가 받은 적이 없다. 목록에 없다고 지우면 안 된다.
+            if (!StateWindow.contains(today, s.getWorkDate())) continue;
             if (withAttendance.contains(s.getId())) {
                 skipped.add(new MonthScheduleCommandDto.Skipped(s.getId(), "출근 기록이 있어 삭제하지 않았어요"));
             } else {
@@ -255,8 +284,36 @@ public class MonthScheduleService {
     }
 
     private static String signature(Schedule s) {
-        return s.getStoreWorker().getId() + "|" + s.getWorkDate() + "|" + s.getStartMin() + "|" + s.getEndMin()
-                + "|" + s.getPart() + "|" + s.getBreakMin() + "|" + s.getKind() + "|" + s.isTimeTbd();
+        return signature(s.getStoreWorker().getId(), s.getWorkDate(), s.getStartMin(), s.getEndMin(), s.getPart(),
+                s.getBreakMin(), s.getKind(), s.isTimeTbd());
+    }
+
+    /** part 는 /me/state 가 null 을 "" 로 내려주므로 같게 본다. */
+    private static String signature(Integer staffId, LocalDate date, int startMin, int endMin, String part,
+                                    int breakMin, Schedule.Kind kind, boolean tbd) {
+        return staffId + "|" + date + "|" + startMin + "|" + endMin + "|" + (part == null ? "" : part)
+                + "|" + breakMin + "|" + kind + "|" + tbd;
+    }
+
+    /** 바뀐 근무의 진행 중 대타 요청을 취소하고 요청자·지원자에게 알린다. 사장님은 바꾼 본인이라 알리지 않는다. */
+    private void cancelPendingSubs(Store store, Schedule shift, String oldLabel) {
+        for (SubstituteRequest r : subRepo.findByScheduleIdAndStatusIn(shift.getId(),
+                List.of(SubstituteRequest.Status.OPEN, SubstituteRequest.Status.ACCEPTED))) {
+            r.setStatus(SubstituteRequest.Status.CANCELLED);
+            String title = "근무가 바뀌어 대타 요청이 취소됐어요";
+            Set<Integer> sent = new HashSet<>();
+            if (sent.add(r.getRequester().getId())) {
+                notifier.send(store, r.getRequester(), Notification.Type.SUB, title, oldLabel, r.getId());
+            }
+            for (SubstituteApplicant a : applicantRepo.findByRequestId(r.getId())) {
+                if (sent.add(a.getApplicant().getId())) {
+                    notifier.send(store, a.getApplicant(), Notification.Type.SUB, title, oldLabel, r.getId());
+                }
+            }
+            if (r.getTaker() != null && sent.add(r.getTaker().getId())) {
+                notifier.send(store, r.getTaker(), Notification.Type.SUB, title, oldLabel, r.getId());
+            }
+        }
     }
 
     /** 확정 달 저장에서 직원별로 바뀐 날짜. 직원마다 알림 한 건. */
@@ -301,9 +358,9 @@ public class MonthScheduleService {
     // ---------------------------------------------------------------- 확정·삭제
 
     public void confirm(Integer userId, Integer storeId, String month) {
+        monthRepo.lockStore(storeId); // 읽기보다 먼저: 동시 확정이 앞 요청의 CONFIRMED 를 보고 알림을 또 보내지 않게
         access.requireOwner(userId, storeId);
         YearMonth ym = parseMonth(month);
-        monthRepo.lockStore(storeId);
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, month)
                 .orElseThrow(() -> ApiException.notFound("근무표를 찾을 수 없어요"));
         if (ms.getStatus() == MonthSchedule.Status.CONFIRMED) return; // 멱등: 알림을 또 보내지 않는다
@@ -314,12 +371,20 @@ public class MonthScheduleService {
         ms.setStatus(MonthSchedule.Status.CONFIRMED);
     }
 
-    /** 출근 기록 없는 그 달 근무와 메타를 지운다. */
+    /** 출근 기록 없는 그 달 근무와 메타를 지운다. 확정된 달이면 근무가 지워진 재직 직원에게 알린다. */
     public void delete(Integer userId, Integer storeId, String month) {
-        access.requireOwner(userId, storeId);
+        monthRepo.lockStore(storeId);
+        Store store = access.requireOwner(userId, storeId);
         YearMonth ym = parseMonth(month);
-        removeShifts(scheduleRepo.findByStoreBetween(storeId, ym.atDay(1), ym.atEndOfMonth()));
+        boolean confirmed = isConfirmed(storeId, month);
+        List<Schedule> removed = removeShifts(scheduleRepo.findByStoreBetween(storeId, ym.atDay(1), ym.atEndOfMonth()));
         monthRepo.findByStoreIdAndMonth(storeId, month).ifPresent(monthRepo::delete);
+        if (confirmed) {
+            ChangedDays changed = new ChangedDays();
+            removed.stream().filter(s -> s.getStoreWorker().getStatus() == StoreWorker.Status.ACTIVE)
+                    .forEach(s -> changed.add(s.getStoreWorker(), s.getWorkDate()));
+            changed.notify(notifier, store, ym);
+        }
     }
 
     // ---------------------------------------------------------------- 템플릿
@@ -334,6 +399,10 @@ public class MonthScheduleService {
                 .map(s -> new ScheduleTemplateDto.Shift(TemplatePattern.dayIndex(s.getWorkDate()),
                         s.getStoreWorker().getId(), s.getStartMin(), s.getEndMin(), s.getPart(), s.getBreakMin(),
                         s.getKind(), s.isTimeTbd())).toList();
+        if (pattern.isEmpty()) {
+            // 빈 템플릿은 적용하면 그 달 근무를 비우기만 한다
+            throw ApiException.badRequest("EMPTY_TEMPLATE", "그 달 첫 월~일 주에 근무가 없어 템플릿으로 저장할 수 없어요");
+        }
         ScheduleTemplate t = new ScheduleTemplate();
         t.setStore(store);
         t.setName(req.name().trim());
@@ -341,15 +410,16 @@ public class MonthScheduleService {
         return ScheduleTemplateDto.Response.from(templateRepo.save(t));
     }
 
+    /** 멱등: 없는·다른 매장 템플릿도 204(다른 탭에서 이미 지운 경우). 다른 매장 것은 지우지 않는다. */
     public void deleteTemplate(Integer userId, Integer storeId, Integer templateId) {
         access.requireOwner(userId, storeId);
         templateRepo.findByIdAndStoreId(templateId, storeId).ifPresent(templateRepo::delete);
     }
 
-    /** 요일별로 대상 날짜를 채운다. 오늘 이후·출근 기록 없는 기존 근무는 교체. */
+    /** 요일별로 대상 날짜를 채운다. 오늘 이후·출근 기록 없는 기존 근무는 종류와 상관없이 교체(FE _clearFuture). */
     public void applyTemplate(Integer userId, Integer storeId, Integer templateId, String month) {
+        monthRepo.lockStore(storeId); // 첫 읽기보다 먼저: 겹친 적용이 지운 근무를 다시 지우지 않게
         Store store = access.requireOwner(userId, storeId);
-        monthRepo.lockStore(storeId);
         YearMonth ym = writableMonth(month);
         ScheduleTemplate t = templateRepo.findByIdAndStoreId(templateId, storeId)
                 .orElseThrow(() -> ApiException.notFound("템플릿을 찾을 수 없어요"));
@@ -358,26 +428,26 @@ public class MonthScheduleService {
             throw ApiException.conflict("ALREADY_CONFIRMED", "이미 확정된 근무표예요");
         }
         List<LocalDate> dates = targetDates(ym);
-        if (!dates.isEmpty()) {
-            // WORK 만 교체한다. 연차·휴무는 두고, 그 날의 템플릿 행은 건너뛴다.
-            List<Schedule> inRange = scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth());
-            removeShifts(inRange.stream().filter(s -> s.getKind() == Schedule.Kind.WORK).toList());
-            Set<String> off = inRange.stream().filter(s -> s.getKind() != Schedule.Kind.WORK)
-                    .map(s -> s.getStoreWorker().getId() + "|" + s.getWorkDate()).collect(Collectors.toSet());
-            Map<Integer, StoreWorker> workers = activeWorkers(storeId);
-            List<Schedule> rows = new ArrayList<>();
-            for (ScheduleTemplateDto.Shift p : ScheduleTemplateDto.parse(t.getPatternJson())) {
-                StoreWorker sw = workers.get(p.staffId());
-                if (sw == null) continue;
-                boolean once = p.kind() == Schedule.Kind.LEAVE;
-                for (LocalDate d : TemplatePattern.datesFor(p.dayIndex(), once, dates)) {
-                    if (off.contains(sw.getId() + "|" + d)) continue;
-                    rows.add(row(sw, d, p.startMin(), p.endMin(), p.part(), p.breakMin(),
-                            p.kind() == null ? Schedule.Kind.WORK : p.kind(), p.timeTbd()));
-                }
-            }
-            saveRows(rows);
+        if (dates.isEmpty()) {
+            throw ApiException.badRequest("PAST_MONTH", "지난 달에는 템플릿을 적용할 수 없어요");
         }
+        Map<Integer, StoreWorker> workers = activeWorkers(storeId);
+        List<Schedule> rows = new ArrayList<>();
+        for (ScheduleTemplateDto.Shift p : ScheduleTemplateDto.parse(t.getPatternJson())) {
+            StoreWorker sw = workers.get(p.staffId());
+            if (sw == null) continue;
+            boolean once = p.kind() == Schedule.Kind.LEAVE;
+            for (LocalDate d : TemplatePattern.datesFor(p.dayIndex(), once, dates)) {
+                rows.add(row(sw, d, p.startMin(), p.endMin(), p.part(), p.breakMin(),
+                        p.kind() == null ? Schedule.Kind.WORK : p.kind(), p.timeTbd()));
+            }
+        }
+        if (rows.isEmpty()) {
+            // 빈 템플릿·퇴사자만 든 템플릿으로 그 달 근무를 비우지 않는다
+            throw ApiException.badRequest("EMPTY_TEMPLATE", "이 달에 넣을 템플릿 근무가 없어요");
+        }
+        removeShifts(scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth()));
+        saveRows(rows);
         if (ms == null) ms = newMeta(store, month);
         ms.setSource(MonthSchedule.Source.TEMPLATE);
         ms.setStatus(MonthSchedule.Status.DRAFT);
@@ -396,7 +466,7 @@ public class MonthScheduleService {
                 List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, String comment,
                 java.time.Instant createdAt) {}
 
-    private final Map<Integer, Plan> plans = new java.util.concurrent.ConcurrentHashMap<>();
+    final Map<Integer, Plan> plans = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 동기 계산만 한다(AI 호출·DB 쓰기 없음). */
     public MonthScheduleCommandDto.PreviewResponse preview(Integer userId, Integer storeId,
@@ -422,7 +492,8 @@ public class MonthScheduleService {
         Set<Integer> withAttendance = work.isEmpty() ? Set.of() : attendanceRepo
                 .findByScheduleIdIn(work.stream().map(Schedule::getId).toList()).stream()
                 .map(a -> a.getSchedule().getId()).collect(Collectors.toSet());
-        int replacing = (int) work.stream().filter(s -> !withAttendance.contains(s.getId())).count();
+        int replacing = (int) work.stream()
+                .filter(s -> !withAttendance.contains(s.getId()) && !started(s, prep.notBefore())).count();
 
         Plan plan = new Plan(java.util.UUID.randomUUID().toString(), ym, policy, priority, out.planned(),
                 prep.prior(), out.unfilled(), prep.staff(), prep.names(), String.join("\n", out.summary().lines()),
@@ -442,7 +513,13 @@ public class MonthScheduleService {
             throw new ApiException(org.springframework.http.HttpStatus.GONE, "PLAN_EXPIRED",
                     "미리보기가 만료됐어요. 다시 만들어 주세요");
         }
-        applyGenerated(storeId, plan.ym(), plan.planned(), plan.comment(), plan.policy(), plan.priority());
+        try {
+            applyGenerated(storeId, plan.ym(), plan.planned(), plan.comment(), plan.policy(), plan.priority());
+        } catch (ApiException e) {
+            // 409(그 사이 확정)는 계획을 되돌려 두어 다시 눌러도 같은 이유를 알려 준다. 더 새 미리보기가 있으면 그것을 둔다.
+            if (e.getStatus() == org.springframework.http.HttpStatus.CONFLICT) plans.putIfAbsent(storeId, plan);
+            throw e;
+        }
         Runnable job = () -> attachBrief(storeId, plan);
         if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
@@ -457,14 +534,30 @@ public class MonthScheduleService {
         }
     }
 
+    /** notBefore: 이 시각 이전에 시작하는 근무는 만들지 않는다(오늘 이미 시작한 시간대). null 이면 자르지 않음. */
     record Prepared(StoreHours hours, List<PartDef> parts, List<GapFiller.PartNeed> needs, List<Person> people,
                     List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, Set<String> off,
-                    List<LocalDate> dates, List<Planned> prior) {
+                    List<LocalDate> dates, List<Planned> prior, java.time.LocalDateTime notBefore) {
         Prepared(StoreHours hours, List<PartDef> parts, List<GapFiller.PartNeed> needs, List<Person> people,
                  List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, Set<String> off,
                  List<LocalDate> dates) {
             this(hours, parts, needs, people, staff, names, off, dates, List.of());
         }
+
+        Prepared(StoreHours hours, List<PartDef> parts, List<GapFiller.PartNeed> needs, List<Person> people,
+                 List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, Set<String> off,
+                 List<LocalDate> dates, List<Planned> prior) {
+            this(hours, parts, needs, people, staff, names, off, dates, prior, null);
+        }
+    }
+
+    /** 시작 시각이 now 이전(같으면 포함)이면 true. now 가 null 이면 false. */
+    static boolean started(LocalDate date, int startMin, java.time.LocalDateTime now) {
+        return now != null && !date.atStartOfDay().plusMinutes(startMin).isAfter(now);
+    }
+
+    private static boolean started(Schedule s, java.time.LocalDateTime now) {
+        return started(s.getWorkDate(), s.getStartMin(), now);
     }
 
     /** failure 가 있으면 그 메시지, 아니면 planned·unfilled·summary. */
@@ -475,8 +568,13 @@ public class MonthScheduleService {
     static Outcome compose(Prepared p, YearMonth ym, MonthSchedule.HolidayPolicy policy,
                            MonthSchedule.Priority priority) {
         if (p.people().isEmpty()) return new Outcome(List.of(), List.of(), null, "직원·알바생을 먼저 등록하세요");
+        // 휴무·연차 날, 이미 시작한 시간대, 남는 근무(출근 기록·이미 시작)와 겹치는 고정 근무는 뺀다.
         List<Planned> existing = FixedShiftPlanner.fixedShifts(p.hours(), p.parts(), p.people(), p.dates()).stream()
-                .filter(s -> !p.off().contains(s.staffId() + "|" + s.date())).toList();
+                .filter(s -> !p.off().contains(s.staffId() + "|" + s.date())
+                        && !started(s.date(), s.startMin(), p.notBefore())
+                        && p.prior().stream().noneMatch(q -> q.staffId() == s.staffId() && q.date().equals(s.date())
+                        && q.startMin() < s.endMin() && s.startMin() < q.endMin()))
+                .toList();
         Map<Integer, Integer> wages = new HashMap<>();
         p.staff().forEach(s -> wages.put(s.id(), s.wage()));
         // 첫 주 앞부분(대상 밖) 기존 근무도 주 6일·40시간 검사에 넣는다. 결과에는 안 들어간다.
@@ -485,29 +583,48 @@ public class MonthScheduleService {
         GapFiller.Result r = GapFiller.fill(p.hours(), p.needs(), seen, p.people(), wages, p.off(), p.dates(),
                 priority);
         List<Planned> planned = new ArrayList<>(existing);
-        planned.addAll(r.shifts());
+        // shortcut: GapFiller 는 오늘 지난 시간대도 채운 뒤 여기서 버린다(그 시간이 주 한도 계산에 잠깐 들어감).
+        // 한도에 걸려 빈칸이 생기는 일이 보이면 GapFiller 에 시작 시각 컷을 넘긴다.
+        r.shifts().stream().filter(s -> !started(s.date(), s.startMin(), p.notBefore())).forEach(planned::add);
+        List<GapFiller.Gap> unfilled = r.unfilled().stream()
+                .filter(g -> !started(g.date(), g.startMin(), p.notBefore())).toList();
         planned.sort(Comparator.comparing(Planned::date).thenComparingInt(Planned::startMin)
                 .thenComparingInt(Planned::endMin).thenComparingInt(Planned::staffId));
-        if (planned.isEmpty()) return new Outcome(planned, r.unfilled(), null, "고정 파트·근무시간을 먼저 정하세요");
-        return new Outcome(planned, r.unfilled(),
-                ScheduleInsights.summarize(ym, planned, p.prior(), p.staff(), r.unfilled(), policy, priority), null);
+        if (planned.isEmpty()) return new Outcome(planned, unfilled, null, "고정 파트·근무시간을 먼저 정하세요");
+        return new Outcome(planned, unfilled,
+                ScheduleInsights.summarize(ym, planned, p.prior(), p.staff(), unfilled, policy, priority), null);
     }
 
     /** 이름을 #id 로 가린 요약으로 AI 브리핑을 받아 이름을 되돌린 뒤 요약 앞에 붙인다. 브리핑이 비면 null. */
     static String briefed(Plan plan, java.util.function.Function<List<String>, String> brief) {
         List<ScheduleInsights.StaffInfo> anon = plan.staff().stream()
-                .map(s -> new ScheduleInsights.StaffInfo(s.id(), "#" + s.id(), s.partTimer(), s.wage())).toList();
+                .map(s -> new ScheduleInsights.StaffInfo(s.id(), "#" + s.id(), s.partTimer(), s.wage(), s.minor())).toList();
         List<String> idLines = ScheduleInsights.summarize(plan.ym(), plan.planned(), plan.prior(), anon, plan.unfilled(),
                 plan.policy(), plan.priority()).lines();
         String ment = ScheduleAiService.nameBack(brief.apply(idLines), plan.names());
         return ment.isBlank() ? null : ment.strip() + "\n\n" + plan.comment();
     }
 
+    /** 브리핑을 못 받았을 때 요약 앞에 붙이는 안내. FE 는 aiComment 를 근무표 상단에 그대로 보여 준다. */
+    static final String BRIEF_FAILED = "AI 설명을 만들지 못했어요. 계산 요약만 보여 드려요.";
+
     void attachBrief(Integer storeId, Plan plan) {
+        String brief;
         try {
-            String comment = briefed(plan, idLines -> ai.generate(ScheduleAiService.briefPrompt(plan.ym().toString(),
+            brief = briefed(plan, idLines -> ai.generate(ScheduleAiService.briefPrompt(plan.ym().toString(),
                     idLines, plan.priority(), plan.policy())).path("comment").asString(""));
-            if (comment == null) return;
+            if (brief == null) log.warn("AI 브리핑 실패, 요약만 둔다: 빈 응답");
+        } catch (ApiException e) {
+            // ScheduleAiService 메시지는 상태만 담는다(키·프롬프트 없음).
+            log.warn("AI 브리핑 실패, 요약만 둔다: {} {}", e.getCode(), e.getMessage());
+            brief = null;
+        } catch (Throwable e) {
+            // 그 밖의 예외는 내용에 프롬프트가 섞일 수 있어 종류만 남긴다.
+            log.warn("AI 브리핑 실패, 요약만 둔다: {}", e.getClass().getSimpleName());
+            brief = null;
+        }
+        String comment = brief != null ? brief : BRIEF_FAILED + "\n\n" + plan.comment();
+        try {
             // 그 사이 다시 생성·적용됐거나(aiComment 가 바뀜) 삭제됐으면 덮어쓰지 않는다.
             // apply 와 같은 매장 잠금을 먼저 잡아 확인~저장 사이에 다른 apply 가 끼지 못하게 한다.
             Boolean saved = tx.execute(st -> {
@@ -521,8 +638,7 @@ public class MonthScheduleService {
             });
             if (Boolean.TRUE.equals(saved)) changeHub.bump(storeId); // 요청이 끝난 뒤라 인터셉터가 못 잡는다
         } catch (Throwable e) {
-            // 프롬프트·키가 로그에 남지 않게 예외 종류만 기록한다.
-            log.warn("AI 브리핑 실패, 요약만 둔다: {}", e.getClass().getSimpleName());
+            log.warn("AI 브리핑 저장 실패: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -535,7 +651,8 @@ public class MonthScheduleService {
         for (StoreWorker w : c.workers.values()) {
             int wage = StaffWageService.wageOn(wageService.rows(w.getId()), ym.atDay(1), w.getHourlyWage());
             boolean partTimer = person(w).partTimer();
-            staff.add(new ScheduleInsights.StaffInfo(w.getId(), w.getWorker().getName(), partTimer, wage));
+            staff.add(new ScheduleInsights.StaffInfo(w.getId(), w.getWorker().getName(), partTimer, wage,
+                    w.getKind() == StoreWorker.Kind.MINOR));
             names.put(w.getId(), w.getWorker().getName());
         }
         List<Schedule> target = scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth());
@@ -550,22 +667,25 @@ public class MonthScheduleService {
         LocalDate monday = dates.get(0).with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
         List<Schedule> context = new ArrayList<>(monday.isBefore(dates.get(0))
                 ? scheduleRepo.findByStoreBetween(storeId, monday, dates.get(0).minusDays(1)) : List.of());
+        // 오늘 이미 시작한 근무도 적용 때 안 지워지니 맥락에 넣는다.
+        java.time.LocalDateTime now = TimeUtil.now();
         List<Schedule> targetWork = target.stream().filter(s -> s.getKind() == Schedule.Kind.WORK).toList();
         if (!targetWork.isEmpty()) {
             Set<Integer> attended = attendanceRepo.findByScheduleIdIn(targetWork.stream().map(Schedule::getId).toList())
                     .stream().map(a -> a.getSchedule().getId()).collect(Collectors.toSet());
-            targetWork.stream().filter(s -> attended.contains(s.getId())).forEach(context::add);
+            targetWork.stream().filter(s -> attended.contains(s.getId()) || started(s, now)).forEach(context::add);
         }
         List<Planned> prior = context.stream().filter(s -> s.getKind() == Schedule.Kind.WORK)
                 .map(s -> new Planned(s.getStoreWorker().getId(), s.getWorkDate(), s.getStartMin(), s.endAbs(),
                         FLEX_PART.equals(s.getPart()) ? null : s.getPart(), s.getBreakMin())).toList();
-        return new Prepared(c.hours, c.parts, needs, c.people, staff, names, off, dates, prior);
+        return new Prepared(c.hours, c.parts, needs, c.people, staff, names, off, dates, prior, now);
     }
 
-    /** 넣을 근무: from(미리보기 뒤 자정을 넘겼으면 바뀐 오늘) 이전과 연차·휴무 날은 버린다. */
-    static List<Planned> insertable(List<Planned> planned, LocalDate from, Set<String> off) {
+    /** 넣을 근무: from(미리보기 뒤 자정을 넘겼으면 바뀐 오늘) 이전, now 까지 이미 시작한 것, 연차·휴무 날은 버린다. */
+    static List<Planned> insertable(List<Planned> planned, LocalDate from, java.time.LocalDateTime now, Set<String> off) {
         return planned.stream()
-                .filter(p -> !p.date().isBefore(from) && !off.contains(p.staffId() + "|" + p.date())).toList();
+                .filter(p -> !p.date().isBefore(from) && !started(p.date(), p.startMin(), now)
+                        && !off.contains(p.staffId() + "|" + p.date())).toList();
     }
 
     private void applyGenerated(Integer storeId, YearMonth ym, List<Planned> planned, String comment,
@@ -580,13 +700,21 @@ public class MonthScheduleService {
         List<LocalDate> dates = targetDates(ym);
         if (dates.isEmpty()) throw ApiException.badRequest("PAST_MONTH", "지난 달은 새로 만들 수 없어요");
         LocalDate from = dates.get(0);
-        // WORK 는 지우고(출근 기록 있는 것 제외) 연차·휴무는 그대로 둔다.
-        removeShifts(scheduleRepo.findByStoreBetween(storeId, from, ym.atEndOfMonth()).stream()
-                .filter(s -> s.getKind() == Schedule.Kind.WORK).toList());
-        Set<String> off = scheduleRepo.findByStoreBetween(storeId, from, ym.atEndOfMonth()).stream()
+        java.time.LocalDateTime now = TimeUtil.now();
+        List<Schedule> existing = scheduleRepo.findByStoreBetween(storeId, from, ym.atEndOfMonth());
+        Set<String> off = existing.stream()
                 .filter(s -> s.getKind() != Schedule.Kind.WORK)
                 .map(s -> s.getStoreWorker().getId() + "|" + s.getWorkDate()).collect(Collectors.toSet());
-        insert(insertable(planned, from, off), activeWorkers(storeId));
+        List<Planned> rows = insertable(planned, from, now, off);
+        Map<Integer, StoreWorker> workers = activeWorkers(storeId);
+        // 미리보기 뒤 퇴사한 직원 근무를 조용히 빼면 빈칸·요약이 틀어진다. 다시 미리보기를 만들게 한다(FE 는 410 이면 설정으로 돌아감).
+        if (rows.stream().anyMatch(p -> !workers.containsKey(p.staffId()))) {
+            throw new ApiException(org.springframework.http.HttpStatus.GONE, "PLAN_STALE",
+                    "그 사이 직원이 바뀌었어요. 미리보기를 다시 만들어 주세요");
+        }
+        // WORK 는 지우고(출근 기록 있는 것·오늘 이미 시작한 것 제외) 연차·휴무는 그대로 둔다.
+        removeShifts(existing.stream().filter(s -> s.getKind() == Schedule.Kind.WORK && !started(s, now)).toList());
+        insert(rows, workers);
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, ym.toString())
                 .orElseGet(() -> newMeta(store, ym.toString()));
         ms.setSource(MonthSchedule.Source.AI);
@@ -711,13 +839,15 @@ public class MonthScheduleService {
         return n;
     }
 
-    /** 출근 기록 없는 근무만 지운다. */
-    private void removeShifts(List<Schedule> shifts) {
-        if (shifts.isEmpty()) return;
+    /** 출근 기록 없는 근무만 지운다. 지운 근무를 돌려준다. */
+    private List<Schedule> removeShifts(List<Schedule> shifts) {
+        if (shifts.isEmpty()) return List.of();
         Set<Integer> withAttendance = attendanceRepo
                 .findByScheduleIdIn(shifts.stream().map(Schedule::getId).toList()).stream()
                 .map(Attendance::getSchedule).map(Schedule::getId).collect(Collectors.toSet());
-        shifts.stream().filter(s -> !withAttendance.contains(s.getId())).forEach(deleter::delete);
+        List<Schedule> removed = shifts.stream().filter(s -> !withAttendance.contains(s.getId())).toList();
+        removed.forEach(deleter::delete);
         scheduleRepo.flush();
+        return removed;
     }
 }

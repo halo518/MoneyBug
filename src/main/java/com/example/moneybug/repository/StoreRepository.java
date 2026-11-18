@@ -16,11 +16,12 @@ public interface StoreRepository extends JpaRepository<Store, Integer> {
 
     boolean existsByCode(String code);
 
-    /** 매장 코드 비교는 대소문자·하이픈을 무시한다 (입력은 대문자+영숫자만 남긴 값). */
-    @Query("select s from Store s where upper(replace(s.code, '-', '')) = :code")
-    Optional<Store> findByNormalizedCode(@Param("code") String code);
+    /** 가입 신청: 코드(XXXX-XXXX, 컬럼 비교는 대소문자 무시)로 매장 행을 찾으면서 잠근다(중복 PENDING 방지). */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from Store s where s.code = :code")
+    Optional<Store> findByCodeForUpdate(@Param("code") String code);
 
-    /** 가입 신청 직렬화용 행 잠금(중복 PENDING 방지). */
+    /** 매장 행 잠금: 같은 매장의 동시 변경을 줄 세운다. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from Store s where s.id = :id")
     Optional<Store> findByIdForUpdate(@Param("id") Integer id);

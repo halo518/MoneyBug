@@ -18,8 +18,14 @@ import java.util.Set;
 public final class ScheduleInsights {
     private static final int HOLIDAY_MIN = 900;
     private static final int HOLIDAY_CAP = 2400;
+    private static final int MINOR_WEEK_MIN = 2100;
 
-    public record StaffInfo(int id, String name, boolean partTimer, int wage) {}
+    /** minor: 연소 근로자(1일 7시간·주 35시간, 22:00~06:00 금지). */
+    public record StaffInfo(int id, String name, boolean partTimer, int wage, boolean minor) {
+        public StaffInfo(int id, String name, boolean partTimer, int wage) {
+            this(id, name, partTimer, wage, false);
+        }
+    }
     public record Summary(long laborCost, int holidayEligible, long holidayPay, List<String> lines) {}
 
     private ScheduleInsights() {}
@@ -101,6 +107,26 @@ public final class ScheduleInsights {
             lines.add((s == null ? "#" + e.getKey() : s.name()) + "님 " + monday.getMonthValue() + "/"
                     + monday.getDayOfMonth() + "주 7일 근무예요. 주 1회 휴일이 필요해요");
         }));
+        // 연소자 제한: 고정 근무는 잘라 넣지만 주 35시간·기존 근무까지 합친 하루 7시간은 여기서 경고한다.
+        for (StaffInfo s : staff) {
+            if (!s.minor()) continue;
+            Map<LocalDate, Integer> perDay = new java.util.TreeMap<>(), perWeek = new java.util.TreeMap<>();
+            boolean night = false;
+            for (FixedShiftPlanner.Planned p : java.util.stream.Stream.concat(prior.stream(), shifts.stream()).toList()) {
+                if (p.staffId() != s.id()) continue;
+                int m = Math.max(0, p.endMin() - p.startMin() - p.breakMin());
+                perDay.merge(p.date(), m, Integer::sum);
+                perWeek.merge(p.date().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)), m, Integer::sum);
+                night |= p.startMin() < FixedShiftPlanner.MINOR_FROM || p.endMin() > FixedShiftPlanner.MINOR_TO;
+            }
+            if (night || perDay.values().stream().anyMatch(m -> m > FixedShiftPlanner.MINOR_DAY_MIN)) {
+                lines.add(s.name() + "님은 연소자라 22시~6시 근무와 하루 7시간 넘는 근무를 할 수 없어요");
+            }
+            perWeek.forEach((monday, m) -> {
+                if (m > MINOR_WEEK_MIN) lines.add(s.name() + "님 " + monday.getMonthValue() + "/" + monday.getDayOfMonth()
+                        + "주 " + hours(m) + "시간이에요. 연소자는 주 35시간까지예요");
+            });
+        }
         if (unfilled != null && !unfilled.isEmpty()) {
             int missing = unfilled.stream().mapToInt(GapFiller.Gap::missing).sum();
             StringBuilder sb = new StringBuilder("직원이 부족해 " + missing + "칸을 못 채웠어요:");

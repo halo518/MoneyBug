@@ -59,6 +59,8 @@ public class StoreService {
                 || request.address() == null || request.address().isBlank()) {
             throw ApiException.badRequest("STORE_REQUIRED_FIELDS", "상호명과 주소를 입력해 주세요");
         }
+        checkName(request.name().trim());
+        checkAddress(request.address().trim());
 
         Store store = request.toEntity(owner);
         String code;
@@ -91,18 +93,19 @@ public class StoreService {
 
     /** PATCH /stores/{storeId} — 사장님. 보낸 것만 반영. */
     public StoreDetailDto.Response update(Integer userId, Integer storeId, StoreDto.UpdateRequest request) {
+        storeRepository.findByIdForUpdate(storeId); // 매장 행을 먼저 잠근다(syncSize 와 같은 순서)
         Store store = access.requireOwner(userId, storeId);
         if (request.getStoreName() != null) {
             if (request.getStoreName().isBlank()) {
                 throw ApiException.badRequest("STORE_REQUIRED_FIELDS", "상호명을 입력해 주세요");
             }
-            store.setStoreName(request.getStoreName().trim());
+            store.setStoreName(checkName(request.getStoreName().trim()));
         }
         if (request.getAddress() != null) {
             if (request.getAddress().isBlank()) {
                 throw ApiException.badRequest("STORE_REQUIRED_FIELDS", "주소를 입력해 주세요");
             }
-            store.setAddress(request.getAddress().trim());
+            store.setAddress(checkAddress(request.getAddress().trim()));
         }
         if (request.getUnderFive() != null) {
             store.setSizeMode(request.getUnderFive() ? Store.SizeMode.UNDER5 : Store.SizeMode.OVER5);
@@ -116,12 +119,13 @@ public class StoreService {
 
     /** PATCH /stores/{storeId}/settings — 사장님. 보낸 것만 반영. */
     public StoreDto.Response updateSettings(Integer userId, Integer storeId, StoreDto.SettingsRequest request) {
+        storeRepository.findByIdForUpdate(storeId); // 매장 행을 먼저 잠근다(syncSize 와 같은 순서)
         Store store = access.requireOwner(userId, storeId);
         if (request.getStoreName() != null) {
             if (request.getStoreName().isBlank()) {
                 throw ApiException.badRequest("STORE_REQUIRED_FIELDS", "매장 이름을 입력하세요.");
             }
-            store.setStoreName(request.getStoreName().trim());
+            store.setStoreName(checkName(request.getStoreName().trim()));
         }
         if (request.getOpenMin() != null) store.setOpenMin(request.getOpenMin());
         if (request.getCloseMin() != null) store.setCloseMin(request.getCloseMin());
@@ -147,6 +151,22 @@ public class StoreService {
         return StoreDto.Response.from(store);
     }
 
+    /** 상호명 길이(DB varchar(100), 문자 수). trim 한 값을 받는다. */
+    static String checkName(String name) {
+        if (name.codePointCount(0, name.length()) > 100) {
+            throw ApiException.badRequest("STORE_FIELD_TOO_LONG", "상호명은 100자 이하로 입력해 주세요");
+        }
+        return name;
+    }
+
+    /** 주소 길이(DB varchar(255), 문자 수). trim 한 값을 받는다. */
+    static String checkAddress(String address) {
+        if (address.codePointCount(0, address.length()) > 255) {
+            throw ApiException.badRequest("STORE_FIELD_TOO_LONG", "주소는 255자 이하로 입력해 주세요");
+        }
+        return address;
+    }
+
     /** 영업시간 검증. 400 문구는 계약 그대로. */
     static void validateHours(Store s) {
         for (int[] h : new int[][]{{s.getOpenMin(), s.getCloseMin()}, {s.getWeekendOpenMin(), s.getWeekendCloseMin()}}) {
@@ -165,17 +185,33 @@ public class StoreService {
         }
     }
 
-    /** 규모 모드에 맞춰 저장된 underFive 를 갱신(급여·AI 노무가 이 값을 읽는다). 직원 승인·퇴사 때도 호출. */
+    /**
+     * 규모 모드에 맞춰 저장된 underFive 를 갱신(급여·AI 노무가 이 값을 읽는다). 직원 승인·퇴사 때도 호출.
+     * 매장 행 잠금을 먼저 잡는다: 호출한 쪽이 이미 잡았으면 같은 트랜잭션이라 그대로 지나가고,
+     * 안 잡았으면 인원을 세기 전에 잡아 동시 승인끼리 UPDATE store 에서 데드락 나지 않게 한다.
+     * 값이 같으면 쓰지 않는다(불필요한 UPDATE 없음).
+     */
     public void syncSize(Store store) {
+        storeRepository.findByIdForUpdate(store.getId());
         long active = storeWorkerRepository.countByStoreIdAndStatus(store.getId(), StoreWorker.Status.ACTIVE);
-        store.setUnderFive(store.effectiveUnderFive(active));
+        boolean under = store.effectiveUnderFive(active);
+        if (store.isUnderFive() != under) store.setUnderFive(under);
+    }
+
+    /** 필요 인원 상한(FE 입력칸 clamp(0, 99)). */
+    static final int MAX_NEED = 99;
+
+    /** 파트 이름 비교 키: DB utf8mb4_unicode_ci 처럼 전각·반각, 대소문자를 같게 본다. */
+    static String partKey(String name) {
+        return java.text.Normalizer.normalize(name.trim(), java.text.Normalizer.Form.NFKC).toLowerCase(java.util.Locale.ROOT);
     }
 
     /**
      * PUT /stores/{storeId}/parts — 파트 목록을 통째로 맞춘다. id 있으면 수정(이름 변경은 근무·직원·고정 근무·템플릿에 전파),
-     * 없으면 추가, 목록에 없는 기존 파트는 삭제(근무의 part 문자열은 그대로).
+     * 없으면 추가, 목록에 없는 기존 파트는 삭제(그 파트의 근무·템플릿 근무는 파트 없는 근무가 된다).
      */
     public List<StorePartDto.Response> savePartList(Integer userId, Integer storeId, List<StorePartDto.Item> items) {
+        storeRepository.findByIdForUpdate(storeId); // 같은 매장의 동시 파트 저장을 줄 세운다
         Store store = access.requireOwner(userId, storeId);
         List<StorePart> existing = storePartRepository.findByStoreIdOrderByStartMinAsc(storeId);
         Map<Integer, StorePart> byId = new LinkedHashMap<>();
@@ -185,17 +221,30 @@ public class StoreService {
         Map<Integer, StorePartDto.Item> keep = new LinkedHashMap<>();
         List<StorePartDto.Item> added = new java.util.ArrayList<>();
         for (StorePartDto.Item it : items) {
+            if (it == null) throw ApiException.badRequest("INVALID_PART", "비어 있는 파트가 있어요.");
             String name = it.name() == null ? "" : it.name().trim();
             if (name.isEmpty()) throw ApiException.badRequest("INVALID_PART", "파트 이름을 입력하세요.");
-            if (name.length() > 50) throw ApiException.badRequest("INVALID_PART", "파트 이름은 50자 이하여야 해요.");
+            if (name.codePointCount(0, name.length()) > 50) {
+                throw ApiException.badRequest("INVALID_PART", "파트 이름은 50자 이하여야 해요.");
+            }
             if (it.startMin() == null || it.endMin() == null || it.startMin() < 0 || it.startMin() > 1439
                     || it.endMin() > 2880 || it.endMin() <= it.startMin()) {
                 throw ApiException.badRequest("INVALID_PART", name + " 종료 시각은 시작 시각보다 늦어야 합니다.");
             }
+            int length = it.endMin() - it.startMin();
+            if (length > 1440) {
+                throw ApiException.badRequest("INVALID_PART", name + " 파트는 24시간을 넘을 수 없어요.");
+            }
             if (it.breakMin() != null && it.breakMin() < 0 || it.need() != null && it.need() < 0) {
                 throw ApiException.badRequest("INVALID_PART", name + " 휴게·필요 인원은 0 이상이어야 해요.");
             }
-            if (!names.add(name)) {
+            if (it.breakMin() != null && it.breakMin() >= length) {
+                throw ApiException.badRequest("INVALID_PART", name + " 휴게 시간은 파트 길이보다 짧아야 해요.");
+            }
+            if (it.need() != null && it.need() > MAX_NEED) {
+                throw ApiException.badRequest("INVALID_PART", name + " 필요 인원은 " + MAX_NEED + "명 이하여야 해요.");
+            }
+            if (!names.add(partKey(name))) {
                 throw ApiException.badRequest("DUPLICATE_PART", "파트 이름이 겹쳐요: " + name);
             }
             Integer id = parsePartId(it.id());
@@ -245,8 +294,8 @@ public class StoreService {
         }
         storePartRepository.flush();
 
-        // 이름이 새 파트로 재사용되는 경우(삭제 후 같은 이름 추가)는 지우지 않는다.
-        deleted.removeAll(names);
+        // 같은 저장에서 같은 이름(대소문자·전각 무시)을 다시 쓰는 경우는 지우지 않는다.
+        deleted.removeIf(n -> names.contains(partKey(n)));
         if (!deleted.isEmpty()) dropDeletedParts(storeId, deleted);
         if (!renames.isEmpty()) propagateRenames(storeId, renames);
         return storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
@@ -270,8 +319,26 @@ public class StoreService {
         p.setNeed(it.need() == null ? 1 : it.need());
     }
 
-    /** 삭제된 파트 이름을 직원 기본 파트·고정 근무에서 뺀다(기본 파트는 남은 첫 파트 또는 null). 근무 기록은 그대로. */
+    /**
+     * 삭제된 파트 이름을 직원 기본 파트·고정 근무에서 뺀다(기본 파트는 남은 첫 파트 또는 null).
+     * 그 파트의 근무와 템플릿 근무는 파트 없는 근무("")가 된다(FE 삭제 확인 창 문구).
+     */
     private void dropDeletedParts(Integer storeId, java.util.Set<String> deleted) {
+        java.util.Set<String> keys = new java.util.HashSet<>();
+        deleted.forEach(n -> keys.add(partKey(n)));
+        for (Schedule s : scheduleRepository.findByStoreAndPartIn(storeId, deleted)) {
+            if (s.getPart() != null && keys.contains(partKey(s.getPart()))) s.setPart("");
+        }
+        for (ScheduleTemplate t : scheduleTemplateRepository.findByStoreIdOrderByIdAsc(storeId)) {
+            List<ScheduleTemplateDto.Shift> shifts = ScheduleTemplateDto.parse(t.getPatternJson());
+            if (shifts.stream().noneMatch(x -> x.part() != null && keys.contains(partKey(x.part())))) continue;
+            t.setPatternJson(ScheduleTemplateDto.toJson(shifts.stream()
+                    .map(x -> x.part() != null && keys.contains(partKey(x.part()))
+                            ? new ScheduleTemplateDto.Shift(x.dayIndex(), x.staffId(), x.startMin(), x.endMin(),
+                            "", x.breakMin(), x.kind(), x.timeTbd())
+                            : x)
+                    .toList()));
+        }
         String fallback = storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
                 .map(StorePart::getName).findFirst().orElse(null);
         for (StoreWorker sw : storeWorkerRepository.findByStoreId(storeId)) {
@@ -311,17 +378,24 @@ public class StoreService {
 
     /** PUT /stores/{storeId}/parts/needs — 사장님. */
     public List<StorePartDto.Response> updatePartNeeds(Integer userId, Integer storeId, List<Integer> needs) {
+        storeRepository.findByIdForUpdate(storeId);
         access.requireOwner(userId, storeId);
+        if (needs.size() != storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).size()) {
+            throw ApiException.badRequest("INVALID_NEED", "필요 인원 개수가 파트 수와 달라요. 새로고침 후 다시 저장해 주세요");
+        }
         return applyNeeds(storeId, needs).stream().map(StorePartDto.Response::from).toList();
     }
 
-    /** store.parts 순서(시작 시각순)대로 need 갱신. 인덱스가 모자라면 무시, 음수는 400. 다른 서비스도 사용한다. */
+    /** store.parts 순서(시작 시각순)대로 need 갱신. 인덱스가 모자라면 무시, 0~99 밖은 400. 다른 서비스도 사용한다. */
     public List<StorePart> applyNeeds(Integer storeId, List<Integer> needs) {
         List<StorePart> parts = storePartRepository.findByStoreIdOrderByStartMinAsc(storeId);
         for (int i = 0; i < parts.size() && i < needs.size(); i++) {
             Integer need = needs.get(i);
             if (need == null || need < 0) {
                 throw ApiException.badRequest("INVALID_NEED", "필요 인원은 0 이상이어야 해요");
+            }
+            if (need > MAX_NEED) {
+                throw ApiException.badRequest("INVALID_NEED", "필요 인원은 " + MAX_NEED + "명 이하여야 해요");
             }
             parts.get(i).setNeed(need);
         }
@@ -331,15 +405,18 @@ public class StoreService {
     /**
      * POST /stores/join-requests — 코드는 대소문자·하이픈 무시.
      * 부수효과: StoreWorker(PENDING, 첫 파트, 최저임금, requestedAt=now) 생성 + 사장님에게 JOIN 알림.
-     * 결과(JoinResult)에 따라 컨트롤러가 201/404/409 로 응답한다.
+     * 결과(JoinResult)에 따라 컨트롤러가 REQUESTED 201, 나머지 200 으로 응답한다(FE 가 본문 result 로 분기).
+     * 동시 신청 직렬화: 첫 문장에서 코드로 매장 행을 잠근다. 잠금 전에 다른 읽기를 하면 그 스냅샷 때문에
+     * 앞 신청이 만든 PENDING 행이 안 보여 중복 행이 생긴다.
      */
     public StoreDetailDto.JoinResponse requestJoin(Integer userId, String code) {
         String normalized = code == null ? "" : code.toUpperCase().replaceAll("[^A-Z0-9]", "");
-        Store store = normalized.isEmpty() ? null : storeRepository.findByNormalizedCode(normalized).orElse(null);
+        // 매장 코드는 항상 XXXX-XXXX(Store.newCode). code 컬럼 유니크 인덱스로 한 행만 잠근다.
+        Store store = normalized.length() != 8 ? null : storeRepository
+                .findByCodeForUpdate(normalized.substring(0, 4) + "-" + normalized.substring(4)).orElse(null);
         if (store == null) {
             return new StoreDetailDto.JoinResponse(StoreDetailDto.JoinResult.NOT_FOUND, null);
         }
-        store = storeRepository.findByIdForUpdate(store.getId()).orElse(store); // 동시 신청 직렬화
         StoreDetailDto.JoinStoreRef ref = new StoreDetailDto.JoinStoreRef(store.getId(), store.getStoreName());
 
         if (access.isOwner(store, userId)

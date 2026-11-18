@@ -5,9 +5,12 @@ import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.service.FixedShiftPlanner;
 import com.example.moneybug.service.GapFiller;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -28,12 +31,14 @@ public class MonthScheduleCommandDto {
             @NotNull LocalDate date,
             @NotNull Integer startMin,
             @NotNull Integer endMin,
-            String part,
-            Integer breakMin,
+            @Size(max = 50, message = "파트 이름은 50자까지예요") String part,
+            @Min(value = 0, message = "휴게 시간이 올바르지 않아요")
+            @Max(value = 1440, message = "휴게 시간이 올바르지 않아요") Integer breakMin,
             Schedule.Kind kind,
             Boolean timeTbd) {}
 
-    public record SaveShiftsRequest(@NotNull @Valid List<ShiftItem> shifts) {}
+    public record SaveShiftsRequest(
+            @NotNull @Valid List<@NotNull(message = "빈 근무가 섞여 있어요") ShiftItem> shifts) {}
 
     public record Skipped(Integer id, String reason) {}
 
@@ -70,7 +75,8 @@ public class MonthScheduleCommandDto {
     }
 
     public record TemplateCreateRequest(
-            @NotBlank(message = "템플릿 이름을 입력하세요.") String name,
+            @NotBlank(message = "템플릿 이름을 입력하세요.")
+            @jakarta.validation.constraints.Size(max = 100, message = "템플릿 이름은 100자까지 입력할 수 있어요.") String name,
             @NotNull @Pattern(regexp = MONTH_RE, message = "월 형식이 올바르지 않아요") String month) {}
 
     public record TemplateApplyRequest(

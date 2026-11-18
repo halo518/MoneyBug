@@ -2,7 +2,9 @@ package com.example.moneybug.config;
 
 import com.example.moneybug.auth.jwt.JwtAuthenticationFilter;
 import com.example.moneybug.auth.jwt.JwtProvider;
+import com.example.moneybug.repository.UserRepository;
 import jakarta.servlet.DispatcherType;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -25,7 +27,7 @@ import java.util.List;
 public class SecurityConfig {
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http, JwtProvider jwtProvider,
+    SecurityFilterChain securityFilterChain(HttpSecurity http, JwtProvider jwtProvider, ObjectProvider<UserRepository> users,
                                             @Value("${springdoc.swagger-ui.enabled:false}") boolean swaggerEnabled) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
@@ -42,7 +44,7 @@ public class SecurityConfig {
                         .access((authentication, context) -> new AuthorizationDecision(swaggerEnabled))
                         .anyRequest().authenticated())
                 .exceptionHandling(e -> e.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
-                .addFilterBefore(new JwtAuthenticationFilter(jwtProvider), UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(new JwtAuthenticationFilter(jwtProvider, users.getIfAvailable()), UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
 

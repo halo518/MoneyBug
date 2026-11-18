@@ -66,4 +66,8 @@ public class User {
     // 보건증 사진 저장 경로/URL (certHasPhoto 는 이 값의 존재 여부로 계산)
     @Column(name = "cert_photo_url", length = 500)
     private String certPhotoUrl;
+
+    // 만료 알림(certAlertDays)을 마지막으로 보낸 날(KST). 같은 날 두 번 보내지 않는다. null = 보낸 적 없음
+    @Column(name = "cert_alert_sent_on")
+    private LocalDate certAlertSentOn;
 }

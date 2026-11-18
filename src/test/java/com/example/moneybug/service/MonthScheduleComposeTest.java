@@ -139,7 +139,32 @@ class MonthScheduleComposeTest {
     void insertableDropsDaysBeforeFromAndOffDays() {
         var planned = List.of(new Planned(7, MON, 480, 720, null, 30), new Planned(7, MON.plusDays(1), 480, 720, null, 30),
                 new Planned(8, MON.plusDays(1), 480, 720, "오픈", 30), new Planned(8, MON.plusDays(2), 480, 720, "오픈", 30));
-        var out = MonthScheduleService.insertable(planned, MON.plusDays(1), Set.of("8|" + MON.plusDays(2)));
+        var out = MonthScheduleService.insertable(planned, MON.plusDays(1), null, Set.of("8|" + MON.plusDays(2)));
         assertEquals(List.of(planned.get(1), planned.get(2)), out);
+        // 화요일 08:00 이 지났으면 그날 08:00 근무는 버린다.
+        var later = MonthScheduleService.insertable(planned, MON.plusDays(1), MON.plusDays(1).atTime(8, 0), Set.of());
+        assertEquals(List.of(planned.get(3)), later);
+    }
+
+    @Test
+    void startedSlotsTodayAreNotPlanned() {
+        // 월요일 10시: 월요일 오픈(8~12)은 이미 시작 → 근무·못 채운 칸 모두 없음. 화요일부터는 그대로.
+        var p = prep(true, Set.of());
+        var out = compose(new MonthScheduleService.Prepared(p.hours(), p.parts(), p.needs(), p.people(), p.staff(),
+                p.names(), p.off(), p.dates(), List.of(), MON.atTime(10, 0)));
+        assertTrue(out.planned().stream().noneMatch(s -> s.date().equals(MON)));
+        assertTrue(out.unfilled().stream().noneMatch(g -> g.date().equals(MON)));
+        assertTrue(out.planned().stream().anyMatch(s -> s.date().equals(MON.plusDays(1))));
+    }
+
+    @Test
+    void fixedShiftOverlappingKeptShiftIsDropped() {
+        // 김알바(8)의 월요일 8~11 출근 기록 근무가 남는다 → 같은 사람 오픈 고정 근무는 미리보기에 다시 안 들어간다.
+        var p = prep(true, Set.of());
+        var kept = List.of(new Planned(8, MON, 480, 660, "오픈", 0));
+        var out = compose(new MonthScheduleService.Prepared(p.hours(), p.parts(), p.needs(), p.people(), p.staff(),
+                p.names(), p.off(), p.dates(), kept));
+        assertTrue(out.planned().stream().noneMatch(s -> s.staffId() == 8 && s.date().equals(MON)));
+        assertEquals(List.of(7), out.planned().stream().filter(s -> s.date().equals(MON)).map(Planned::staffId).toList());
     }
 }

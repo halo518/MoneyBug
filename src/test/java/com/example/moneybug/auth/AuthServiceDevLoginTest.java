@@ -5,6 +5,7 @@ import com.example.moneybug.auth.kakao.KakaoClient;
 import com.example.moneybug.entity.User;
 import com.example.moneybug.repository.UserRepository;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -36,7 +37,8 @@ class AuthServiceDevLoginTest {
         when(refreshTokenRepository.save(any(RefreshToken.class))).thenAnswer(inv -> inv.getArgument(0));
         when(jwtProvider.createAccessToken(any(Long.class))).thenReturn("our-own-jwt");
         when(jwtProvider.accessTtlSeconds()).thenReturn(1800L);
-        return new AuthService(kakaoClient, userRepository, refreshTokenRepository, jwtProvider, 1209600L,
+        return new AuthService(kakaoClient, userRepository, refreshTokenRepository, jwtProvider,
+                mock(PlatformTransactionManager.class), 1209600L,
                 devLoginEnabled, testLoginToken);
     }
 
@@ -51,14 +53,14 @@ class AuthServiceDevLoginTest {
 
     @Test
     void otherTokensAreStillVerifiedAgainstKakao() {
-        doThrow(new AuthException("Invalid Kakao access token")).when(kakaoClient).verifyAppId("fake");
+        doThrow(new AuthException(AuthException.INVALID_KAKAO_TOKEN, "x")).when(kakaoClient).verifyAppId("fake");
 
         assertThrows(AuthException.class, () -> service(true).loginWithKakaoAccessToken("fake"));
     }
 
     @Test
     void testTokenIsRejectedWhenSwitchedOff() {
-        doThrow(new AuthException("Invalid Kakao access token")).when(kakaoClient).verifyAppId("test_token");
+        doThrow(new AuthException(AuthException.INVALID_KAKAO_TOKEN, "x")).when(kakaoClient).verifyAppId("test_token");
 
         assertThrows(AuthException.class, () -> service(false).loginWithKakaoAccessToken("test_token"));
     }
@@ -72,7 +74,7 @@ class AuthServiceDevLoginTest {
 
     @Test
     void shortOrWrongTestTokenIsVerifiedAgainstKakao() {
-        doThrow(new AuthException("Invalid Kakao access token")).when(kakaoClient).verifyAppId(any());
+        doThrow(new AuthException(AuthException.INVALID_KAKAO_TOKEN, "x")).when(kakaoClient).verifyAppId(any());
         assertThrows(AuthException.class, () -> service(false, "short").loginWithKakaoAccessToken("short"));
         assertThrows(AuthException.class,
                 () -> service(false, "s3cret-test-login-0123").loginWithKakaoAccessToken("s3cret-test-login-0124"));

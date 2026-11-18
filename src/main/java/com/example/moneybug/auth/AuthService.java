@@ -8,8 +8,12 @@ import com.example.moneybug.repository.UserRepository; // [수정] user 패키�
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -47,9 +51,11 @@ public class AuthService {
     private final Duration refreshTtl;
     private final boolean devLoginEnabled;
     private final byte[] testLoginToken;
+    private final TransactionTemplate tx;
 
     public AuthService(KakaoClient kakaoClient, UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository, JwtProvider jwtProvider,
+                       PlatformTransactionManager txManager,
                        @Value("${jwt.refresh-ttl-seconds}") long refreshTtlSeconds,
                        @Value("${auth.dev-login.enabled:false}") boolean devLoginEnabled,
                        @Value("${auth.test-login.token:}") String testLoginToken) {
@@ -57,6 +63,7 @@ public class AuthService {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtProvider = jwtProvider;
+        this.tx = new TransactionTemplate(txManager);
         this.refreshTtl = Duration.ofSeconds(refreshTtlSeconds);
         this.devLoginEnabled = devLoginEnabled;
         this.testLoginToken = testLoginToken == null || testLoginToken.length() < TEST_TOKEN_MIN_LENGTH
@@ -67,8 +74,7 @@ public class AuthService {
         }
     }
 
-    /** Mobile: the app already holds a Kakao access token from the Kakao SDK. */
-    @Transactional
+    /** Mobile: the app already holds a Kakao access token from the Kakao SDK. Kakao calls run outside a transaction. */
     public Tokens loginWithKakaoAccessToken(String kakaoAccessToken) {
         // 개발용 우회: 토큰이 "test_token" 과 정확히 일치하면 카카오 검증 없이 테스트 사용자로 로그인한다.
         // 기본은 꺼짐. 로컬에서만 DEV_LOGIN_ENABLED=true 로 켠다.
@@ -84,7 +90,6 @@ public class AuthService {
     }
 
     /** Web: the browser came back from Kakao with an authorization code. */
-    @Transactional
     public Tokens loginWithKakaoCode(String code) {
         String kakaoAccessToken = kakaoClient.exchangeCode(code);
         return login(kakaoClient.fetchUser(kakaoAccessToken));
@@ -93,13 +98,34 @@ public class AuthService {
     /** Rotates the refresh token: the presented one is consumed and a new pair is issued. */
     @Transactional(noRollbackFor = AuthException.class)
     public Tokens refresh(String refreshToken) {
-        RefreshToken stored = refreshTokenRepository.findByTokenHash(hash(refreshToken))
-                .orElseThrow(() -> new AuthException("Invalid refresh token"));
+        // 잠그고 읽는다: 같은 토큰이 동시에 오면 진 요청은 지워진 뒤를 읽어 이미 쓴 토큰처럼 401 을 받는다.
+        RefreshToken stored = refreshTokenRepository.findByTokenHashForUpdate(hash(refreshToken))
+                .orElseThrow(AuthException::invalidRefreshToken);
         refreshTokenRepository.delete(stored);
         if (stored.isExpired()) {
-            throw new AuthException("Refresh token expired");
+            throw AuthException.refreshTokenExpired();
+        }
+        if (!userExists(stored.getUserId())) {
+            // 지워진 사용자: 남은 refresh 토큰도 함께 폐기한다(FK 가 없어 행이 남는다).
+            refreshTokenRepository.deleteAllByUserId(stored.getUserId());
+            throw AuthException.invalidRefreshToken();
         }
         return issue(stored.getUserId());
+    }
+
+    /** 쓰이지 않고 만료된 refresh 토큰 행 정리 (매일 04:30). */
+    @Scheduled(cron = "0 30 4 * * *")
+    @Transactional
+    public void purgeExpiredRefreshTokens() {
+        int n = refreshTokenRepository.deleteExpired(Instant.now());
+        if (n > 0) {
+            log.info("만료된 refresh 토큰 {}개 삭제", n);
+        }
+    }
+
+    private boolean userExists(Long userId) {
+        return userId != null && userId > 0 && userId <= Integer.MAX_VALUE
+                && userRepository.existsById(userId.intValue());
     }
 
     @Transactional
@@ -108,6 +134,15 @@ public class AuthService {
     }
 
     private Tokens login(KakaoUser kakaoUser) {
+        try {
+            return tx.execute(s -> issue(upsertUser(kakaoUser)));
+        } catch (DataIntegrityViolationException e) {
+            // 같은 카카오 계정의 첫 로그인이 동시에 들어와 다른 요청이 먼저 만들었다(kakao_id unique). 새 트랜잭션에서 그 사용자로 로그인.
+            return tx.execute(s -> issue(upsertUser(kakaoUser)));
+        }
+    }
+
+    private Long upsertUser(KakaoUser kakaoUser) {
         String kakaoId = String.valueOf(kakaoUser.kakaoId());
         // [수정] 신규 가입 시 name 은 카카오 닉네임으로, email/profileImage 는 카카오 값으로 채운다.
         // role 은 제거됨(관계로 결정). contact 는 선택 항목이라 비워 둔다.
@@ -126,7 +161,7 @@ public class AuthService {
         if (user.getProfileImage() == null) {
             user.setProfileImage(kakaoUser.profileImage());
         }
-        return issue(userRepository.save(user).getId().longValue());
+        return userRepository.save(user).getId().longValue();
     }
 
     // [수정] name 은 NOT NULL, VARCHAR(50) 이므로 닉네임이 없거나 길면 보정한다.

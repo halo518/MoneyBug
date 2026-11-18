@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 import com.example.moneybug.entity.Contract;
 import com.example.moneybug.entity.StoreWorker;
-import jakarta.validation.constraints.AssertTrue;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -20,45 +20,45 @@ import java.time.LocalDateTime;
 
 public class ContractDto {
 
+    /** 계약서 시급 상한 (오타로 이력·급여 계산이 넘치는 것 방지). */
+    public static final int MAX_WAGE = 1_000_000;
+
     /** PUT .../contract — 사장님이 작성하고 서명해서 보낸다. */
     @Getter
     @Setter
     @NoArgsConstructor
     public static class Request {
         // [변경] mappingId 제거: 경로의 {staffId} 로 결정한다.
-        @NotNull
+        @NotNull(message = "계약 시작일을 입력해 주세요")
         @JsonProperty("start")
         private LocalDate startDate;
 
-        @NotNull
+        @NotNull(message = "계약 종료일을 입력해 주세요")
         @JsonProperty("end")
         private LocalDate endDate;
 
-        @NotNull
-        @Min(StoreWorkerDto.MIN_WAGE_2026)
+        // 최저임금(WAGE_BELOW_MINIMUM)·종료일>시작일(INVALID_CONTRACT_PERIOD)은 서비스가 한국어 코드로 검사한다
+        @NotNull(message = "시급을 입력해 주세요")
+        @Max(value = MAX_WAGE, message = "시급은 1,000,000원 이하여야 해요")
         private Integer wage;
 
-        @NotNull
-        @Min(1)
+        @NotNull(message = "주 소정근로시간을 입력해 주세요")
+        @Min(value = 1, message = "주 소정근로시간은 1시간 이상이어야 해요")
+        @Max(value = 52, message = "주 소정근로시간은 52시간 이하여야 해요")
         private Integer weeklyHours;
 
-        @NotBlank
-        @Size(max = 50)
+        // 글자 수(50) 검사는 서비스가 한다. 여기는 UTF-16 단위 상한만.
+        @NotBlank(message = "근무 요일을 입력해 주세요")
+        @Size(max = 100, message = "근무 요일은 50자 이하로 적어 주세요")
         private String workDays;
 
-        // 비어도 된다 (FE 가 비워 보낼 수 있음)
-        @Size(max = 100)
+        // 비어도 된다 (FE 가 비워 보낼 수 있음). 글자 수(100) 검사는 서비스가 한다.
+        @Size(max = 200, message = "업무 내용은 100자 이하로 적어 주세요")
         private String duty;
 
         /** POST /me/signatures 로 올린 사장님 서명 id (선택). */
-        @Size(max = 500)
+        @Size(max = 500, message = "서명 이미지 경로가 너무 길어요")
         private String ownerSignatureUrl;
-
-        // 설계서: end > start
-        @AssertTrue(message = "종료일은 시작일 이후여야 합니다")
-        public boolean isEndAfterStart() {
-            return startDate == null || endDate == null || endDate.isAfter(startDate);
-        }
 
         /** 사장님 서명 시각(ownerSignedAt)은 저장 시점 서버 시각으로 기록한다. */
         public Contract toEntity(StoreWorker storeWorker) {
@@ -82,9 +82,12 @@ public class ContractDto {
     @NoArgsConstructor
     public static class SignRequest {
         // 서명 이미지 업로드 경로/ID
-        @NotBlank
-        @Size(max = 500)
+        @NotBlank(message = "서명 이미지를 올려 주세요")
+        @Size(max = 500, message = "서명 이미지 경로가 너무 길어요")
         private String signatureUrl;
+
+        /** 직원이 본 계약서 id (선택). 현재 계약서가 아니면 409 CONTRACT_CHANGED. 없으면 현재 계약서에 서명. */
+        private Integer contractId;
     }
 
     @Getter

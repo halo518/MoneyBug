@@ -25,11 +25,9 @@ public class StoreDto {
     @Setter
     @NoArgsConstructor
     public static class UpdateRequest {
-        @Size(max = 100)
         @JsonProperty("name")
-        private String storeName;
+        private String storeName; // 길이는 trim 뒤 StoreService 가 검사(한국어 문구)
 
-        @Size(max = 255)
         private String address;
 
         @JsonProperty("isSmall")
@@ -43,9 +41,8 @@ public class StoreDto {
     @Setter
     @NoArgsConstructor
     public static class SettingsRequest {
-        @Size(max = 100)
         @JsonProperty("name")
-        private String storeName;
+        private String storeName; // 길이는 trim 뒤 StoreService 가 검사(한국어 문구)
         private Integer openMin;
         private Integer closeMin;
         private Integer weekendOpenMin;
