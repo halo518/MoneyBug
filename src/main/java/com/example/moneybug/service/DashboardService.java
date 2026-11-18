@@ -5,7 +5,6 @@ import com.example.moneybug.dto.ContractDto;
 import com.example.moneybug.dto.DashboardDto;
 import com.example.moneybug.dto.ScheduleDto;
 import com.example.moneybug.dto.SubstituteRequestDto;
-import com.example.moneybug.dto.UserDto;
 import com.example.moneybug.entity.Attendance;
 import com.example.moneybug.entity.Contract;
 import com.example.moneybug.entity.Schedule;
@@ -26,7 +25,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -39,7 +38,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class DashboardService {
 
-    private static final int DEFAULT_CERT_ALERT_DAYS = 30;
+    private static final int CERT_ALERT_DAYS = 30;
 
     private final ScheduleRepository scheduleRepository;
     private final AttendanceRepository attendanceRepository;
@@ -69,38 +68,37 @@ public class DashboardService {
                     staffAssembler.toDto(s.getStoreWorker()), view, AttendanceCalc.status(s, a, now)));
         }
 
-        // 진행 중 대타 (open | accepted)
+        // 진행 중 대타 (open | accepted). 근무가 이미 시작한 요청은 승인할 수 없으므로 뺀다.
         List<SubstituteRequestDto.Response> pendingSubs = substituteRequestRepository
                 .findByStoreAndStatusIn(storeId, List.of(SubstituteRequest.Status.OPEN,
                         SubstituteRequest.Status.ACCEPTED)).stream()
+                .filter(r -> TimeUtil.start(r.getSchedule()).isAfter(now))
                 .map(substituteAssembler::toDto)
                 .toList();
 
         int pendingJoin = (int) storeWorkerRepository.countByStoreIdAndStatus(storeId, StoreWorker.Status.PENDING);
 
-        // 보건증 만료 임박·미등록 + 서명 대기 계약서 (재직 직원 기준)
+        // 보건증 미등록·만료·30일 이내 + 서명 대기 계약서 (재직 직원 기준). FE web_dashboard_screen certAlerts 와 같은 규칙.
         List<DashboardDto.CertAlert> certAlerts = new ArrayList<>();
-        List<Integer> unsigned = new ArrayList<>();
+        List<String> unsigned = new ArrayList<>();
         for (StoreWorker sw : storeWorkerRepository.findByStoreIdAndStatus(storeId, StoreWorker.Status.ACTIVE)) {
             var worker = sw.getWorker();
             if (worker.getCertExpiry() == null) {
                 certAlerts.add(new DashboardDto.CertAlert(sw.getId(), null));
             } else {
                 long daysLeft = ChronoUnit.DAYS.between(date, worker.getCertExpiry());
-                int threshold = Collections.max(
-                        UserDto.splitAlertDays(worker.getCertAlertDays()).isEmpty()
-                                ? List.of(DEFAULT_CERT_ALERT_DAYS)
-                                : UserDto.splitAlertDays(worker.getCertAlertDays()));
-                if (daysLeft <= threshold) {
+                if (daysLeft <= CERT_ALERT_DAYS) {
                     certAlerts.add(new DashboardDto.CertAlert(sw.getId(), daysLeft));
                 }
             }
             Optional<Contract> latest = contractRepository
                     .findFirstByStoreWorkerIdOrderByCreatedAtDescIdDesc(sw.getId());
             if (latest.isPresent() && !latest.get().isSigned()) {
-                unsigned.add(sw.getId());
+                unsigned.add(String.valueOf(sw.getId()));
             }
         }
+        // 급한 순 (미등록이 맨 앞)
+        certAlerts.sort(Comparator.comparingLong(c -> c.daysLeft() == null ? Long.MIN_VALUE : c.daysLeft()));
 
         long unread = notificationRepository.countByToUserIdAndStoreIdAndReadFalse(userId, store.getId());
         return new DashboardDto.Response(todayShifts, pendingSubs, pendingJoin, certAlerts, unsigned, unread);
