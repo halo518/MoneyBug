@@ -4,14 +4,17 @@ import com.example.moneybug.dto.CommonDto;
 import com.example.moneybug.dto.SchedulePlanDto;
 import com.example.moneybug.dto.ScheduleDto;
 import com.example.moneybug.dto.ShiftCommandDto;
+import com.example.moneybug.entity.MonthSchedule;
 import com.example.moneybug.entity.Notification;
 import com.example.moneybug.entity.Schedule;
 import com.example.moneybug.entity.Store;
 import com.example.moneybug.entity.StorePart;
 import com.example.moneybug.entity.StoreWorker;
+import com.example.moneybug.entity.SubstituteApplicant;
 import com.example.moneybug.entity.SubstituteRequest;
 import com.example.moneybug.repository.AttendanceRepository;
 import com.example.moneybug.repository.MonthScheduleRepository;
+import com.example.moneybug.repository.SubstituteApplicantRepository;
 import com.example.moneybug.repository.SubstituteRequestRepository;
 import com.example.moneybug.repository.ScheduleRepository;
 import com.example.moneybug.repository.StorePartRepository;
@@ -23,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -44,6 +48,8 @@ public class ShiftService {
     private static final int MAX_REPEAT_WEEKS = 52;
     private static final int MAX_RANGE_DAYS = 366;
     private static final int DEFAULT_WEEKLY_MAX_MIN = 40 * 60;
+    static final LocalDate MIN_DATE = LocalDate.of(2000, 1, 1);
+    static final LocalDate MAX_DATE = LocalDate.of(2099, 12, 31);
 
     private final ScheduleRepository scheduleRepository;
     private final AttendanceRepository attendanceRepository;
@@ -56,6 +62,7 @@ public class ShiftService {
     private final SchedulePlanStore planStore;
     private final StoreService storeService;
     private final SubstituteRequestRepository substituteRequestRepository;
+    private final SubstituteApplicantRepository substituteApplicantRepository;
     private final MonthScheduleRepository monthScheduleRepository;
 
     // ---------------------------------------------------------------- 조회
@@ -64,7 +71,7 @@ public class ShiftService {
     @Transactional(readOnly = true)
     public CommonDto.ListResponse<ScheduleDto.Response> list(Integer userId, Integer storeId, LocalDate from,
                                                              LocalDate to, Integer staffId, boolean workOnly) {
-        access.requireOwnerOrStaff(userId, storeId);
+        Store store = access.requireOwnerOrStaff(userId, storeId);
         LocalDate start = from != null ? from : TimeUtil.today().withDayOfMonth(1);
         LocalDate end = to != null ? to : start.with(TemporalAdjusters.lastDayOfMonth());
         if (end.isBefore(start)) {
@@ -73,17 +80,26 @@ public class ShiftService {
         if (start.plusDays(MAX_RANGE_DAYS).isBefore(end)) {
             throw ApiException.badRequest("RANGE_TOO_LONG", "조회 기간은 최대 366일이에요");
         }
-        return CommonDto.ListResponse.of(scheduleRepository.findByStoreBetween(storeId, start, end).stream()
+        List<Schedule> rows = scheduleRepository.findByStoreBetween(storeId, start, end);
+        if (!access.isOwner(store, userId)) {
+            rows = StateService.visibleShifts(rows, draftMonths(storeId)); // /me/state 와 같은 규칙
+        }
+        return CommonDto.ListResponse.of(rows.stream()
                 .filter(s -> staffId == null || s.getStoreWorker().getId().equals(staffId))
                 .filter(s -> !workOnly || s.isWork())
                 .map(ScheduleDto.Response::from)
                 .toList());
     }
 
+    /** 직원에게는 작성 중(DRAFT) 달의 근무가 없는 것처럼 404. */
     @Transactional(readOnly = true)
     public ScheduleDto.Response get(Integer userId, Integer storeId, Integer shiftId) {
-        access.requireOwnerOrStaff(userId, storeId);
-        return ScheduleDto.Response.from(findShift(storeId, shiftId));
+        Store store = access.requireOwnerOrStaff(userId, storeId);
+        Schedule s = findShift(storeId, shiftId);
+        if (!access.isOwner(store, userId) && isDraftMonth(storeId, s.getWorkDate())) {
+            throw ApiException.notFound("근무를 찾을 수 없어요");
+        }
+        return ScheduleDto.Response.from(s);
     }
 
     // ---------------------------------------------------------------- 생성 · 수정 · 삭제
@@ -91,10 +107,12 @@ public class ShiftService {
     /**
      * POST /shifts — 직원 수 x repeatWeeks 만큼 생성(여러 명이면 같은 근무, 반복이면 매주 같은 요일).
      * 휴게는 생략 시 자동. 실제 근무는 같은 직원의 다른 실제 근무와 겹치면 409.
-     * 알림(첫 주만): 실제 근무를 받은 각 직원에게 SUB "새 근무가 배정됐어요".
+     * 지난 날짜도 받는다(기록 정정용, 수정도 같은 규칙). 날짜는 MIN_DATE~MAX_DATE.
+     * 알림(첫 주만): 실제 근무를 받은 각 직원에게 SUB "새 근무가 배정됐어요" (지난 날짜·작성 중 달은 보내지 않음).
      */
     public ShiftCommandDto.CreateResponse create(Integer userId, Integer storeId,
                                                  ShiftCommandDto.CreateRequest request) {
+        monthScheduleRepository.lockStore(storeId); // 동시 생성·수정이 겹침 검사를 함께 통과하지 않게 매장 단위로 줄 세운다
         Store store = access.requireOwner(userId, storeId);
         requireValidTime(request.startMin(), request.endMin());
 
@@ -104,6 +122,9 @@ public class ShiftService {
         if (weeks > MAX_REPEAT_WEEKS) {
             throw ApiException.badRequest("REPEAT_TOO_LONG", "반복은 최대 " + MAX_REPEAT_WEEKS + "주까지예요");
         }
+        requireDateInRange(request.date());
+        requireDateInRange(request.date().plusWeeks(weeks - 1));
+        if (request.breakMin() != null) requireValidBreak(request.breakMin(), request.startMin(), request.endMin());
         int breakMin = request.breakMin() != null ? request.breakMin()
                 : ScheduleDto.defaultBreakMin(request.startMin(), request.endMin());
 
@@ -127,9 +148,10 @@ public class ShiftService {
                 scheduleRepository.save(s);
                 created.add(ScheduleDto.Response.from(s));
 
-                if (w == 0 && s.isWork()) {
+                // refId 없음: FE 는 sub 알림의 refId 를 대타 요청 id 로 읽는다.
+                if (w == 0 && s.isWork() && shownToStaff(storeId, sw, s.getWorkDate())) {
                     notifier.sendToStaff(store, sw, Notification.Type.SUB, "새 근무가 배정됐어요",
-                            TimeUtil.label(s), s.getId());
+                            TimeUtil.label(s), null);
                 }
             }
         }
@@ -137,13 +159,17 @@ public class ShiftService {
     }
 
     /**
-     * PATCH /shifts/{id} — 보낸 것만 반영. 지난 날짜로 이동 금지, 겹침 검사.
-     * 알림 규칙: 근무였는데 담당자가 바뀌었거나 근무가 아니게 됨 -> 이전 담당자 "삭제됐어요" /
-     * 근무인데 담당자가 바뀌었거나 새로 근무가 됨 -> 새 담당자 "새 근무가 배정됐어요" /
-     * 같은 담당자인데 날짜·시간 라벨이 바뀜 -> "수정됐어요"
+     * PATCH /shifts/{id} — 보낸 것만 반영. 지난 날짜로도 옮길 수 있다(생성과 같은 규칙), 겹침 검사.
+     * 퇴사자의 근무는 날짜를 옮길 수 없다(같은 날짜 안의 기록 정정만). 휴게를 안 보내면 그대로 두되(FE 와 같음),
+     * 새 근무 길이에 맞지 않으면 법정 최소 휴게로 바꾼다.
+     * 알림 규칙("보이는" = 실제 근무 + 재직 중 + 오늘 이후 + 작성 중 달 아님):
+     * 보이던 근무가 담당자가 바뀌었거나 안 보이게 됨 -> 이전 담당자 "삭제됐어요" /
+     * 보이는 근무가 담당자가 바뀌었거나 새로 보이게 됨 -> 새 담당자 "새 근무가 배정됐어요" /
+     * 같은 담당자에게 계속 보이는데 날짜·시간 라벨이 바뀜 -> "수정됐어요"
      */
     public ScheduleDto.Response update(Integer userId, Integer storeId, Integer shiftId,
                                        ShiftCommandDto.UpdateRequest request) {
+        monthScheduleRepository.lockStore(storeId); // create 와 같은 매장 잠금 (겹침 검사 전에)
         Store store = access.requireOwner(userId, storeId);
         Schedule s = findShift(storeId, shiftId);
         if (attendanceRepository.existsByScheduleId(s.getId())) {
@@ -159,12 +185,25 @@ public class ShiftService {
             newStaff = activeStaff(storeId, request.staffId());
         }
         LocalDate date = request.date() != null ? request.date() : s.getWorkDate();
-        if (!date.equals(s.getWorkDate()) && date.isBefore(TimeUtil.today())) {
-            throw ApiException.badRequest("PAST_DATE", "지난 날짜로는 옮길 수 없어요");
+        if (!date.equals(s.getWorkDate())) {
+            requireDateInRange(date);
+            if (newStaff.getStatus() != StoreWorker.Status.ACTIVE) {
+                throw ApiException.conflict("NOT_ACTIVE",
+                        newStaff.getWorker().getName() + "님은 재직 중이 아니라 근무 날짜를 옮길 수 없어요");
+            }
         }
         int startMin = request.startMin() != null ? request.startMin() : s.getStartMin();
         int endMin = request.endMin() != null ? request.endMin() : s.getEndMin();
         requireValidTime(startMin, endMin);
+        int breakMin;
+        if (request.breakMin() != null) {
+            requireValidBreak(request.breakMin(), startMin, endMin);
+            breakMin = request.breakMin();
+        } else {
+            breakMin = s.getBreakMin() < length(startMin, endMin) ? s.getBreakMin()
+                    : ScheduleDto.defaultBreakMin(startMin, endMin);
+        }
+        boolean wasShown = s.isWork() && shownToStaff(storeId, oldStaff, s.getWorkDate());
 
         Schedule.Kind kind = request.kind() != null ? request.kind() : s.getKind();
         boolean tbd = request.timeTbd() != null ? request.timeTbd() : s.isTimeTbd();
@@ -182,25 +221,32 @@ public class ShiftService {
         s.setKind(kind);
         s.setTimeTbd(tbd);
         if (request.part() != null) s.setPart(request.part());
-        if (request.breakMin() != null) s.setBreakMin(request.breakMin());
+        s.setBreakMin(breakMin);
 
         boolean isWork = s.isWork();
-        // 담당자·날짜·시간·종류가 바뀌면 진행 중 대타 요청은 더 이상 맞지 않는다.
+        // 담당자·날짜·시간·종류가 바뀌면 진행 중 대타 요청은 더 이상 맞지 않는다. 지원자에게도 알린다.
         if (!newStaff.getId().equals(oldStaff.getId()) || !oldLabel.equals(TimeUtil.label(s)) || wasWork != isWork) {
             for (SubstituteRequest r : substituteRequestRepository.findByScheduleId(s.getId())) {
-                if (r.isPending()) r.setStatus(SubstituteRequest.Status.CANCELLED);
+                if (!r.isPending()) continue;
+                r.setStatus(SubstituteRequest.Status.CANCELLED);
+                for (SubstituteApplicant a : substituteApplicantRepository.findByRequestId(r.getId())) {
+                    notifier.send(store, a.getApplicant(), Notification.Type.SUB,
+                            "근무가 바뀌어 대타 요청이 취소됐어요", oldLabel, r.getId());
+                }
             }
         }
         boolean staffChanged = !newStaff.getId().equals(oldStaff.getId());
         String newLabel = TimeUtil.label(s);
+        boolean isShown = isWork && shownToStaff(storeId, newStaff, date);
 
-        if (wasWork && (staffChanged || !isWork)) {
-            notifier.sendToStaff(store, oldStaff, Notification.Type.SUB, "근무가 삭제됐어요", oldLabel, s.getId());
+        // refId 없음: FE 는 sub 알림의 refId 를 대타 요청 id 로 읽는다.
+        if (wasShown && (staffChanged || !isShown)) {
+            notifier.sendToStaff(store, oldStaff, Notification.Type.SUB, "근무가 삭제됐어요", oldLabel, null);
         }
-        if (isWork && (staffChanged || !wasWork)) {
-            notifier.sendToStaff(store, newStaff, Notification.Type.SUB, "새 근무가 배정됐어요", newLabel, s.getId());
-        } else if (isWork && wasWork && !oldLabel.equals(newLabel)) {
-            notifier.sendToStaff(store, newStaff, Notification.Type.SUB, "근무가 수정됐어요", newLabel, s.getId());
+        if (isShown && (staffChanged || !wasShown)) {
+            notifier.sendToStaff(store, newStaff, Notification.Type.SUB, "새 근무가 배정됐어요", newLabel, null);
+        } else if (isShown && wasShown && !oldLabel.equals(newLabel)) {
+            notifier.sendToStaff(store, newStaff, Notification.Type.SUB, "근무가 수정됐어요", newLabel, null);
         }
         return ScheduleDto.Response.from(s);
     }
@@ -219,7 +265,7 @@ public class ShiftService {
         if (attendanceRepository.existsByScheduleId(s.getId())) {
             throw ApiException.conflict("ATTENDANCE_EXISTS", "출근 기록이 있는 근무는 삭제할 수 없어요");
         }
-        if (s.isWork()) {
+        if (s.isWork() && shownToStaff(storeId, s.getStoreWorker(), s.getWorkDate())) {
             notifier.sendToStaff(store, s.getStoreWorker(), Notification.Type.SUB, "근무가 삭제됐어요",
                     TimeUtil.label(s), null);
         }
@@ -466,6 +512,43 @@ public class ShiftService {
         if (startMin == endMin) {
             throw ApiException.badRequest("INVALID_TIME", "시작과 종료 시각이 같을 수 없어요");
         }
+    }
+
+    /** 근무 길이(분). endMin 1440 = 그날 24:00, endMin <= startMin 이면 다음 날까지. 최대 1440. */
+    private static int length(int startMin, int endMin) {
+        return (endMin <= startMin ? endMin + 1440 : endMin) - startMin;
+    }
+
+    /** 휴게는 근무 길이보다 짧아야 한다 (월 저장과 같은 코드). */
+    private static void requireValidBreak(int breakMin, int startMin, int endMin) {
+        if (breakMin >= length(startMin, endMin)) {
+            throw ApiException.badRequest("INVALID_BREAK", "휴게 시간은 근무 시간보다 짧아야 해요");
+        }
+    }
+
+    /** MySQL DATE 범위 밖(10000년 등)이나 터무니없는 날짜는 저장 전에 400. */
+    static void requireDateInRange(LocalDate date) {
+        if (date.isBefore(MIN_DATE) || date.isAfter(MAX_DATE)) {
+            throw ApiException.badRequest("DATE_OUT_OF_RANGE",
+                    "근무 날짜는 " + MIN_DATE.getYear() + "~" + MAX_DATE.getYear() + "년 사이여야 해요");
+        }
+    }
+
+    private boolean isDraftMonth(Integer storeId, LocalDate date) {
+        return monthScheduleRepository.findByStoreIdAndMonth(storeId, YearMonth.from(date).toString())
+                .filter(m -> m.getStatus() == MonthSchedule.Status.DRAFT).isPresent();
+    }
+
+    private Set<String> draftMonths(Integer storeId) {
+        return monthScheduleRepository.findByStoreIdOrderByMonthAsc(storeId).stream()
+                .filter(m -> m.getStatus() == MonthSchedule.Status.DRAFT)
+                .map(MonthSchedule::getMonth).collect(Collectors.toSet());
+    }
+
+    /** 직원에게 알릴 근무인지: 재직 중 + 오늘 이후 + 작성 중(DRAFT) 달이 아님(직원은 그 달 근무를 못 본다). */
+    private boolean shownToStaff(Integer storeId, StoreWorker sw, LocalDate date) {
+        return sw.getStatus() == StoreWorker.Status.ACTIVE && !date.isBefore(TimeUtil.today())
+                && !isDraftMonth(storeId, date);
     }
 
     private static boolean isFlex(StoreWorker sw) {
