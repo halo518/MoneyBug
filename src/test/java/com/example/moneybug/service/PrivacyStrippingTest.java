@@ -31,7 +31,10 @@ class PrivacyStrippingTest {
         assertNull(d.person().getContact());
         assertNull(d.person().getKakaoId());
         assertEquals("민수", d.person().getName());
-        assertTrue(d.person().isCertHasPhoto());
+        assertFalse(d.person().isCertHasPhoto()); // 동료 보건증 정보는 뺀다
+        assertNull(d.person().getCertExpiry());
+        assertNull(d.person().getCertDaysLeft());
+        assertEquals(List.of(), d.person().getCertAlertDays()); // FE 는 null 을 못 받는다
         assertEquals(0, d.hourlyWage());
         assertNull(d.taxType());
         assertTrue(d.wages().isEmpty());
