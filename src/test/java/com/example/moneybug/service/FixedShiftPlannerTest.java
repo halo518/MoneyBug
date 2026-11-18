@@ -119,4 +119,25 @@ class FixedShiftPlannerTest {
         assertEquals(360, tue.endMin());
         assertEquals(30, tue.breakMin());
     }
+
+    @Test
+    void minorFixedPartsKeepNightBanAndSevenHours() {
+        // 연소자: 야간(22~02) 파트는 빠지고, 12시간 종일 파트는 하루 7시간으로 잘리고, 22시를 넘는 마감은 22시에 끝난다.
+        var hours = new StoreHours(480, 1560, 480, 1560);
+        var parts = List.of(new PartDef("종일", 540, 1320, 60), new PartDef("야간", 1320, 1560, 30),
+                new PartDef("늦은마감", 1080, 1380, 30));
+        Person minor = new Person(5, true, week("야간", "종일", "늦은마감", "종일,늦은마감"), null, null, true);
+        List<Planned> out = FixedShiftPlanner.fixedShifts(hours, parts, List.of(minor), days(4));
+        assertTrue(out.stream().noneMatch(p -> p.date().equals(MON)));
+        Planned day = out.stream().filter(p -> p.date().equals(MON.plusDays(1))).findFirst().orElseThrow();
+        assertEquals(540, day.startMin());
+        assertEquals(420, day.endMin() - day.startMin() - day.breakMin());
+        Planned late = out.stream().filter(p -> p.date().equals(MON.plusDays(2))).findFirst().orElseThrow();
+        assertEquals(1320, late.endMin());
+        // 같은 날 두 파트: 종일이 7시간을 다 써서 늦은마감은 빠진다.
+        assertEquals(1, out.stream().filter(p -> p.date().equals(MON.plusDays(3))).count());
+        // 연소자가 아니면 그대로.
+        Person adult = new Person(6, true, week("야간"), null);
+        assertEquals(1, FixedShiftPlanner.fixedShifts(hours, parts, List.of(adult), days(1)).size());
+    }
 }

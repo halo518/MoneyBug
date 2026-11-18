@@ -396,7 +396,7 @@ public class MonthScheduleService {
                 List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, String comment,
                 java.time.Instant createdAt) {}
 
-    private final Map<Integer, Plan> plans = new java.util.concurrent.ConcurrentHashMap<>();
+    final Map<Integer, Plan> plans = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 동기 계산만 한다(AI 호출·DB 쓰기 없음). */
     public MonthScheduleCommandDto.PreviewResponse preview(Integer userId, Integer storeId,
@@ -422,7 +422,8 @@ public class MonthScheduleService {
         Set<Integer> withAttendance = work.isEmpty() ? Set.of() : attendanceRepo
                 .findByScheduleIdIn(work.stream().map(Schedule::getId).toList()).stream()
                 .map(a -> a.getSchedule().getId()).collect(Collectors.toSet());
-        int replacing = (int) work.stream().filter(s -> !withAttendance.contains(s.getId())).count();
+        int replacing = (int) work.stream()
+                .filter(s -> !withAttendance.contains(s.getId()) && !started(s, prep.notBefore())).count();
 
         Plan plan = new Plan(java.util.UUID.randomUUID().toString(), ym, policy, priority, out.planned(),
                 prep.prior(), out.unfilled(), prep.staff(), prep.names(), String.join("\n", out.summary().lines()),
@@ -442,7 +443,13 @@ public class MonthScheduleService {
             throw new ApiException(org.springframework.http.HttpStatus.GONE, "PLAN_EXPIRED",
                     "미리보기가 만료됐어요. 다시 만들어 주세요");
         }
-        applyGenerated(storeId, plan.ym(), plan.planned(), plan.comment(), plan.policy(), plan.priority());
+        try {
+            applyGenerated(storeId, plan.ym(), plan.planned(), plan.comment(), plan.policy(), plan.priority());
+        } catch (ApiException e) {
+            // 409(그 사이 확정)는 계획을 되돌려 두어 다시 눌러도 같은 이유를 알려 준다. 더 새 미리보기가 있으면 그것을 둔다.
+            if (e.getStatus() == org.springframework.http.HttpStatus.CONFLICT) plans.putIfAbsent(storeId, plan);
+            throw e;
+        }
         Runnable job = () -> attachBrief(storeId, plan);
         if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
@@ -457,14 +464,30 @@ public class MonthScheduleService {
         }
     }
 
+    /** notBefore: 이 시각 이전에 시작하는 근무는 만들지 않는다(오늘 이미 시작한 시간대). null 이면 자르지 않음. */
     record Prepared(StoreHours hours, List<PartDef> parts, List<GapFiller.PartNeed> needs, List<Person> people,
                     List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, Set<String> off,
-                    List<LocalDate> dates, List<Planned> prior) {
+                    List<LocalDate> dates, List<Planned> prior, java.time.LocalDateTime notBefore) {
         Prepared(StoreHours hours, List<PartDef> parts, List<GapFiller.PartNeed> needs, List<Person> people,
                  List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, Set<String> off,
                  List<LocalDate> dates) {
             this(hours, parts, needs, people, staff, names, off, dates, List.of());
         }
+
+        Prepared(StoreHours hours, List<PartDef> parts, List<GapFiller.PartNeed> needs, List<Person> people,
+                 List<ScheduleInsights.StaffInfo> staff, Map<Integer, String> names, Set<String> off,
+                 List<LocalDate> dates, List<Planned> prior) {
+            this(hours, parts, needs, people, staff, names, off, dates, prior, null);
+        }
+    }
+
+    /** 시작 시각이 now 이전(같으면 포함)이면 true. now 가 null 이면 false. */
+    static boolean started(LocalDate date, int startMin, java.time.LocalDateTime now) {
+        return now != null && !date.atStartOfDay().plusMinutes(startMin).isAfter(now);
+    }
+
+    private static boolean started(Schedule s, java.time.LocalDateTime now) {
+        return started(s.getWorkDate(), s.getStartMin(), now);
     }
 
     /** failure 가 있으면 그 메시지, 아니면 planned·unfilled·summary. */
@@ -475,8 +498,13 @@ public class MonthScheduleService {
     static Outcome compose(Prepared p, YearMonth ym, MonthSchedule.HolidayPolicy policy,
                            MonthSchedule.Priority priority) {
         if (p.people().isEmpty()) return new Outcome(List.of(), List.of(), null, "직원·알바생을 먼저 등록하세요");
+        // 휴무·연차 날, 이미 시작한 시간대, 남는 근무(출근 기록·이미 시작)와 겹치는 고정 근무는 뺀다.
         List<Planned> existing = FixedShiftPlanner.fixedShifts(p.hours(), p.parts(), p.people(), p.dates()).stream()
-                .filter(s -> !p.off().contains(s.staffId() + "|" + s.date())).toList();
+                .filter(s -> !p.off().contains(s.staffId() + "|" + s.date())
+                        && !started(s.date(), s.startMin(), p.notBefore())
+                        && p.prior().stream().noneMatch(q -> q.staffId() == s.staffId() && q.date().equals(s.date())
+                        && q.startMin() < s.endMin() && s.startMin() < q.endMin()))
+                .toList();
         Map<Integer, Integer> wages = new HashMap<>();
         p.staff().forEach(s -> wages.put(s.id(), s.wage()));
         // 첫 주 앞부분(대상 밖) 기존 근무도 주 6일·40시간 검사에 넣는다. 결과에는 안 들어간다.
@@ -485,29 +513,48 @@ public class MonthScheduleService {
         GapFiller.Result r = GapFiller.fill(p.hours(), p.needs(), seen, p.people(), wages, p.off(), p.dates(),
                 priority);
         List<Planned> planned = new ArrayList<>(existing);
-        planned.addAll(r.shifts());
+        // shortcut: GapFiller 는 오늘 지난 시간대도 채운 뒤 여기서 버린다(그 시간이 주 한도 계산에 잠깐 들어감).
+        // 한도에 걸려 빈칸이 생기는 일이 보이면 GapFiller 에 시작 시각 컷을 넘긴다.
+        r.shifts().stream().filter(s -> !started(s.date(), s.startMin(), p.notBefore())).forEach(planned::add);
+        List<GapFiller.Gap> unfilled = r.unfilled().stream()
+                .filter(g -> !started(g.date(), g.startMin(), p.notBefore())).toList();
         planned.sort(Comparator.comparing(Planned::date).thenComparingInt(Planned::startMin)
                 .thenComparingInt(Planned::endMin).thenComparingInt(Planned::staffId));
-        if (planned.isEmpty()) return new Outcome(planned, r.unfilled(), null, "고정 파트·근무시간을 먼저 정하세요");
-        return new Outcome(planned, r.unfilled(),
-                ScheduleInsights.summarize(ym, planned, p.prior(), p.staff(), r.unfilled(), policy, priority), null);
+        if (planned.isEmpty()) return new Outcome(planned, unfilled, null, "고정 파트·근무시간을 먼저 정하세요");
+        return new Outcome(planned, unfilled,
+                ScheduleInsights.summarize(ym, planned, p.prior(), p.staff(), unfilled, policy, priority), null);
     }
 
     /** 이름을 #id 로 가린 요약으로 AI 브리핑을 받아 이름을 되돌린 뒤 요약 앞에 붙인다. 브리핑이 비면 null. */
     static String briefed(Plan plan, java.util.function.Function<List<String>, String> brief) {
         List<ScheduleInsights.StaffInfo> anon = plan.staff().stream()
-                .map(s -> new ScheduleInsights.StaffInfo(s.id(), "#" + s.id(), s.partTimer(), s.wage())).toList();
+                .map(s -> new ScheduleInsights.StaffInfo(s.id(), "#" + s.id(), s.partTimer(), s.wage(), s.minor())).toList();
         List<String> idLines = ScheduleInsights.summarize(plan.ym(), plan.planned(), plan.prior(), anon, plan.unfilled(),
                 plan.policy(), plan.priority()).lines();
         String ment = ScheduleAiService.nameBack(brief.apply(idLines), plan.names());
         return ment.isBlank() ? null : ment.strip() + "\n\n" + plan.comment();
     }
 
+    /** 브리핑을 못 받았을 때 요약 앞에 붙이는 안내. FE 는 aiComment 를 근무표 상단에 그대로 보여 준다. */
+    static final String BRIEF_FAILED = "AI 설명을 만들지 못했어요. 계산 요약만 보여 드려요.";
+
     void attachBrief(Integer storeId, Plan plan) {
+        String brief;
         try {
-            String comment = briefed(plan, idLines -> ai.generate(ScheduleAiService.briefPrompt(plan.ym().toString(),
+            brief = briefed(plan, idLines -> ai.generate(ScheduleAiService.briefPrompt(plan.ym().toString(),
                     idLines, plan.priority(), plan.policy())).path("comment").asString(""));
-            if (comment == null) return;
+            if (brief == null) log.warn("AI 브리핑 실패, 요약만 둔다: 빈 응답");
+        } catch (ApiException e) {
+            // ScheduleAiService 메시지는 상태만 담는다(키·프롬프트 없음).
+            log.warn("AI 브리핑 실패, 요약만 둔다: {} {}", e.getCode(), e.getMessage());
+            brief = null;
+        } catch (Throwable e) {
+            // 그 밖의 예외는 내용에 프롬프트가 섞일 수 있어 종류만 남긴다.
+            log.warn("AI 브리핑 실패, 요약만 둔다: {}", e.getClass().getSimpleName());
+            brief = null;
+        }
+        String comment = brief != null ? brief : BRIEF_FAILED + "\n\n" + plan.comment();
+        try {
             // 그 사이 다시 생성·적용됐거나(aiComment 가 바뀜) 삭제됐으면 덮어쓰지 않는다.
             // apply 와 같은 매장 잠금을 먼저 잡아 확인~저장 사이에 다른 apply 가 끼지 못하게 한다.
             Boolean saved = tx.execute(st -> {
@@ -521,8 +568,7 @@ public class MonthScheduleService {
             });
             if (Boolean.TRUE.equals(saved)) changeHub.bump(storeId); // 요청이 끝난 뒤라 인터셉터가 못 잡는다
         } catch (Throwable e) {
-            // 프롬프트·키가 로그에 남지 않게 예외 종류만 기록한다.
-            log.warn("AI 브리핑 실패, 요약만 둔다: {}", e.getClass().getSimpleName());
+            log.warn("AI 브리핑 저장 실패: {}", e.getClass().getSimpleName());
         }
     }
 
@@ -535,7 +581,8 @@ public class MonthScheduleService {
         for (StoreWorker w : c.workers.values()) {
             int wage = StaffWageService.wageOn(wageService.rows(w.getId()), ym.atDay(1), w.getHourlyWage());
             boolean partTimer = person(w).partTimer();
-            staff.add(new ScheduleInsights.StaffInfo(w.getId(), w.getWorker().getName(), partTimer, wage));
+            staff.add(new ScheduleInsights.StaffInfo(w.getId(), w.getWorker().getName(), partTimer, wage,
+                    w.getKind() == StoreWorker.Kind.MINOR));
             names.put(w.getId(), w.getWorker().getName());
         }
         List<Schedule> target = scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth());
@@ -550,22 +597,25 @@ public class MonthScheduleService {
         LocalDate monday = dates.get(0).with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
         List<Schedule> context = new ArrayList<>(monday.isBefore(dates.get(0))
                 ? scheduleRepo.findByStoreBetween(storeId, monday, dates.get(0).minusDays(1)) : List.of());
+        // 오늘 이미 시작한 근무도 적용 때 안 지워지니 맥락에 넣는다.
+        java.time.LocalDateTime now = TimeUtil.now();
         List<Schedule> targetWork = target.stream().filter(s -> s.getKind() == Schedule.Kind.WORK).toList();
         if (!targetWork.isEmpty()) {
             Set<Integer> attended = attendanceRepo.findByScheduleIdIn(targetWork.stream().map(Schedule::getId).toList())
                     .stream().map(a -> a.getSchedule().getId()).collect(Collectors.toSet());
-            targetWork.stream().filter(s -> attended.contains(s.getId())).forEach(context::add);
+            targetWork.stream().filter(s -> attended.contains(s.getId()) || started(s, now)).forEach(context::add);
         }
         List<Planned> prior = context.stream().filter(s -> s.getKind() == Schedule.Kind.WORK)
                 .map(s -> new Planned(s.getStoreWorker().getId(), s.getWorkDate(), s.getStartMin(), s.endAbs(),
                         FLEX_PART.equals(s.getPart()) ? null : s.getPart(), s.getBreakMin())).toList();
-        return new Prepared(c.hours, c.parts, needs, c.people, staff, names, off, dates, prior);
+        return new Prepared(c.hours, c.parts, needs, c.people, staff, names, off, dates, prior, now);
     }
 
-    /** 넣을 근무: from(미리보기 뒤 자정을 넘겼으면 바뀐 오늘) 이전과 연차·휴무 날은 버린다. */
-    static List<Planned> insertable(List<Planned> planned, LocalDate from, Set<String> off) {
+    /** 넣을 근무: from(미리보기 뒤 자정을 넘겼으면 바뀐 오늘) 이전, now 까지 이미 시작한 것, 연차·휴무 날은 버린다. */
+    static List<Planned> insertable(List<Planned> planned, LocalDate from, java.time.LocalDateTime now, Set<String> off) {
         return planned.stream()
-                .filter(p -> !p.date().isBefore(from) && !off.contains(p.staffId() + "|" + p.date())).toList();
+                .filter(p -> !p.date().isBefore(from) && !started(p.date(), p.startMin(), now)
+                        && !off.contains(p.staffId() + "|" + p.date())).toList();
     }
 
     private void applyGenerated(Integer storeId, YearMonth ym, List<Planned> planned, String comment,
@@ -580,13 +630,21 @@ public class MonthScheduleService {
         List<LocalDate> dates = targetDates(ym);
         if (dates.isEmpty()) throw ApiException.badRequest("PAST_MONTH", "지난 달은 새로 만들 수 없어요");
         LocalDate from = dates.get(0);
-        // WORK 는 지우고(출근 기록 있는 것 제외) 연차·휴무는 그대로 둔다.
-        removeShifts(scheduleRepo.findByStoreBetween(storeId, from, ym.atEndOfMonth()).stream()
-                .filter(s -> s.getKind() == Schedule.Kind.WORK).toList());
-        Set<String> off = scheduleRepo.findByStoreBetween(storeId, from, ym.atEndOfMonth()).stream()
+        java.time.LocalDateTime now = TimeUtil.now();
+        List<Schedule> existing = scheduleRepo.findByStoreBetween(storeId, from, ym.atEndOfMonth());
+        Set<String> off = existing.stream()
                 .filter(s -> s.getKind() != Schedule.Kind.WORK)
                 .map(s -> s.getStoreWorker().getId() + "|" + s.getWorkDate()).collect(Collectors.toSet());
-        insert(insertable(planned, from, off), activeWorkers(storeId));
+        List<Planned> rows = insertable(planned, from, now, off);
+        Map<Integer, StoreWorker> workers = activeWorkers(storeId);
+        // 미리보기 뒤 퇴사한 직원 근무를 조용히 빼면 빈칸·요약이 틀어진다. 다시 미리보기를 만들게 한다(FE 는 410 이면 설정으로 돌아감).
+        if (rows.stream().anyMatch(p -> !workers.containsKey(p.staffId()))) {
+            throw new ApiException(org.springframework.http.HttpStatus.GONE, "PLAN_STALE",
+                    "그 사이 직원이 바뀌었어요. 미리보기를 다시 만들어 주세요");
+        }
+        // WORK 는 지우고(출근 기록 있는 것·오늘 이미 시작한 것 제외) 연차·휴무는 그대로 둔다.
+        removeShifts(existing.stream().filter(s -> s.getKind() == Schedule.Kind.WORK && !started(s, now)).toList());
+        insert(rows, workers);
         MonthSchedule ms = monthRepo.findByStoreIdAndMonth(storeId, ym.toString())
                 .orElseGet(() -> newMeta(store, ym.toString()));
         ms.setSource(MonthSchedule.Source.AI);

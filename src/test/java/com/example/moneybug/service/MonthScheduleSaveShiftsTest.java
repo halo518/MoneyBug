@@ -32,10 +32,11 @@ class MonthScheduleSaveShiftsTest {
     ScheduleDeleter deleter = mock(ScheduleDeleter.class);
     NotificationPublisher notifier = mock(NotificationPublisher.class);
     ScheduleAiService ai = mock(ScheduleAiService.class);
+    StoreChangeHub changeHub = mock(StoreChangeHub.class);
     MonthScheduleService service = new MonthScheduleService(mock(StoreAccess.class), monthRepo,
             mock(ScheduleTemplateRepository.class), scheduleRepo, attendanceRepo, workerRepo,
             mock(StorePartRepository.class), mock(OverlapChecker.class), deleter, mock(ShiftService.class),
-            ai, mock(StaffWageService.class), mock(StoreChangeHub.class),
+            ai, mock(StaffWageService.class), changeHub,
             notifier, mock(PlatformTransactionManager.class));
 
     static Schedule shift(int id, StoreWorker sw, LocalDate d, int start, int end) {
@@ -215,5 +216,49 @@ class MonthScheduleSaveShiftsTest {
         order.verify(monthRepo).lockStore(1);
         order.verify(monthRepo).findByStoreIdAndMonth(1, "2026-11");
         assertThat(ms.getAiComment()).isEqualTo("브리핑\n\n" + plan.comment());
+    }
+
+    @Test
+    void briefFailureIsShownAndSignalled() {
+        var prep = MonthScheduleComposeTest.prep(true, java.util.Set.of());
+        var plan = MonthScheduleComposeTest.plan(prep, MonthScheduleComposeTest.compose(prep));
+        MonthSchedule ms = new MonthSchedule();
+        ms.setAiComment(plan.comment());
+        when(ai.generate(any())).thenThrow(new ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                "AI_FAILED", "AI 서버에 연결하지 못했어요."));
+        when(monthRepo.findByStoreIdAndMonth(1, "2026-11")).thenReturn(Optional.of(ms));
+
+        service.attachBrief(1, plan);
+
+        assertThat(ms.getAiComment()).isEqualTo(MonthScheduleService.BRIEF_FAILED + "\n\n" + plan.comment());
+        verify(changeHub).bump(1);
+    }
+
+    @Test
+    void confirmedConflictKeepsPlanAndStaffChangeIsStale() {
+        var prep = MonthScheduleComposeTest.prep(true, java.util.Set.of());
+        var base = MonthScheduleComposeTest.plan(prep, MonthScheduleComposeTest.compose(prep));
+        var plan = new MonthScheduleService.Plan("p1", java.time.YearMonth.from(LocalDate.now().plusMonths(1)),
+                base.policy(), base.priority(), List.of(new com.example.moneybug.service.FixedShiftPlanner.Planned(
+                99, LocalDate.now().plusMonths(1).withDayOfMonth(1), 480, 720, "오픈", 30)),
+                List.of(), List.of(), base.staff(), base.names(), base.comment(), java.time.Instant.now());
+        String month = plan.ym().toString();
+
+        MonthSchedule confirmed = new MonthSchedule();
+        confirmed.setStatus(MonthSchedule.Status.CONFIRMED);
+        when(monthRepo.findByStoreIdAndMonth(1, month)).thenReturn(Optional.of(confirmed));
+        service.plans.put(1, plan);
+        for (int i = 0; i < 2; i++) { // 두 번째도 410 이 아니라 같은 409
+            assertThatThrownBy(() -> service.applyPlan(7, 1, "p1"))
+                    .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("ALREADY_CONFIRMED"));
+        }
+
+        // 확정이 풀렸는데 계획 속 직원(99)이 퇴사 → 410 PLAN_STALE, 아무것도 지우지 않음.
+        when(monthRepo.findByStoreIdAndMonth(1, month)).thenReturn(Optional.empty());
+        when(workerRepo.findByStoreIdAndStatus(1, StoreWorker.Status.ACTIVE)).thenReturn(List.of());
+        when(scheduleRepo.findByStoreBetween(any(), any(), any())).thenReturn(List.of());
+        assertThatThrownBy(() -> service.applyPlan(7, 1, "p1"))
+                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("PLAN_STALE"));
+        verifyNoInteractions(deleter);
     }
 }
