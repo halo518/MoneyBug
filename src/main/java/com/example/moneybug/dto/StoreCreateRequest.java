@@ -6,7 +6,6 @@ import com.example.moneybug.entity.User;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Size;
 
 /**
  * POST /api/v1/stores 요청 본문 (설계서 §4.2 매장 생성).
@@ -18,12 +17,10 @@ public record StoreCreateRequest(
 
         @Schema(description = "상호명", example = "카페 커푸치노")
         @NotBlank(message = "상호명과 주소를 입력해 주세요")
-        @Size(max = 100)
-        String name,
+        String name, // 길이는 trim 뒤 StoreService 가 검사(한국어 문구)
 
         @Schema(description = "도로명 주소", example = "서울특별시 강남구 테헤란로 1")
         @NotBlank(message = "상호명과 주소를 입력해 주세요")
-        @Size(max = 255)
         String address,
 
         @Schema(description = "상시 5인 미만 사업장 여부. true 면 가산수당 미적용. 생략 시 true", example = "true")
