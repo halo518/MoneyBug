@@ -31,6 +31,10 @@ public class StaffWage {
     @Column(nullable = false)
     private Integer wage;
 
+    /** 이 단계를 만든 계약서 id. null = 사장님이 직접 바꾼 시급(또는 이 열이 생기기 전 행). */
+    @Column(name = "contract_id")
+    private Integer contractId;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 }
