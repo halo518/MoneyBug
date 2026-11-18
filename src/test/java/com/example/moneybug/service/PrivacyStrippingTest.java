@@ -56,9 +56,11 @@ class PrivacyStrippingTest {
     @Test
     void draftMonthShiftsHidden() {
         Schedule draft = new Schedule();
+        draft.setId(1);
         draft.setWorkDate(LocalDate.of(2026, 11, 3));
         Schedule noMeta = new Schedule();
         noMeta.setWorkDate(LocalDate.of(2026, 10, 3));
-        assertEquals(List.of(noMeta), StateService.visibleShifts(List.of(draft, noMeta), Set.of("2026-11")));
+        assertEquals(List.of(noMeta), StateService.visibleShifts(List.of(draft, noMeta), Set.of("2026-11"),
+                Set.of(), LocalDate.of(2026, 11, 1)));
     }
 }
