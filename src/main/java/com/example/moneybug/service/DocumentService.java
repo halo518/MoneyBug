@@ -15,9 +15,13 @@ import com.example.moneybug.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -37,39 +41,81 @@ public class DocumentService {
     private final NotificationPublisher notifier;
     private final FileStorage fileStorage;
     private final StaffWageService wages;
+    private final StoreChangeHub changeHub;
 
     /**
      * PUT /me/health-cert — expiry/alertDays/photo 모두 필수. certExpiry·certAlertDays·certPhotoUrl 저장.
-     * 부수효과: 내가 재직 중인 모든 매장의 사장님에게 CERT 알림 "{이름}님이 보건증을 갱신했어요".
+     * 부수효과: 내가 재직 중인 모든 매장의 사장님에게 CERT 알림 "{이름}님이 보건증을 갱신했어요" + 그 매장 변경 신호.
+     * 검증(만료일·알림 시점)은 파일 저장 전에 한다. 실패해 롤백되면 새 파일을, 성공하면 예전 사진을 지운다.
      */
     public UserDto.Response uploadHealthCert(Integer userId, HealthCertDto.Request request) {
-        User user = userRepository.findById(userId)
+        // 만료 알림 잡과 같은 행을 고치므로 먼저 잠근다.
+        User user = userRepository.lockForCert(userId)
                 .orElseThrow(() -> ApiException.notFound("사용자를 찾을 수 없어요"));
         MultipartFile photo = request.getPhoto();
         if (photo == null || photo.isEmpty()) {
             throw ApiException.badRequest("PHOTO_REQUIRED", "보건증 사진을 올려 주세요");
         }
-        if (request.getExpiry().isBefore(TimeUtil.today())) {
+        LocalDate today = TimeUtil.today();
+        if (request.getExpiry().isBefore(today)) {
             throw ApiException.badRequest("EXPIRY_IN_PAST", "만료일이 이미 지났어요. 유효한 보건증을 올려 주세요");
         }
-        List<Integer> alertDays = request.getAlertDays().stream().distinct()
-                .sorted(Comparator.reverseOrder()).toList();
-        if (alertDays.stream().anyMatch(d -> d == null || d < 0)) {
-            throw ApiException.badRequest("INVALID_ALERT_DAYS", "알림 시점은 0 이상이어야 해요");
+        if (request.getExpiry().isAfter(today.plusYears(HealthCertDto.MAX_EXPIRY_YEARS))) {
+            throw ApiException.badRequest("EXPIRY_TOO_FAR", "만료일이 너무 멀어요. 보건증의 만료일을 확인해 주세요");
         }
+        List<Integer> alertDays = validAlertDays(request.getAlertDays());
 
+        String replaced = user.getCertPhotoUrl();
         String path = fileStorage.saveImage("health-cert/" + userId, photo);
         user.setCertExpiry(request.getExpiry());
         user.setCertAlertDays(UserDto.joinAlertDays(alertDays));
         user.setCertPhotoUrl(path);
 
         String body = "만료일 " + DateTimeFormatter.ofPattern("yyyy.MM.dd").format(request.getExpiry());
+        List<Integer> storeIds = new ArrayList<>();
         for (StoreWorker sw : storeWorkerRepository.findByWorkerIdAndStatusIn(userId,
                 List.of(StoreWorker.Status.ACTIVE))) {
             notifier.sendToOwner(sw.getStore(), Notification.Type.CERT,
                     user.getName() + "님이 보건증을 갱신했어요", body, sw.getId());
+            storeIds.add(sw.getStore().getId());
         }
+        afterCertSaved(path, replaced, "health-cert/" + userId + "/", storeIds);
         return UserDto.Response.from(user);
+    }
+
+    /** 빈 항목·범위·개수를 파일 저장 전에 검사한다. 중복 제거 후 내림차순. */
+    static List<Integer> validAlertDays(List<Integer> raw) {
+        if (raw == null || raw.isEmpty() || raw.stream().anyMatch(d -> d == null || d < 0
+                || d > HealthCertDto.MAX_ALERT_DAY)) {
+            throw ApiException.badRequest("INVALID_ALERT_DAYS",
+                    "알림 시점은 0~" + HealthCertDto.MAX_ALERT_DAY + "일 전 사이로 골라 주세요");
+        }
+        List<Integer> days = raw.stream().distinct().sorted(Comparator.reverseOrder()).toList();
+        if (days.size() > HealthCertDto.MAX_ALERTS) {
+            throw ApiException.badRequest("INVALID_ALERT_DAYS",
+                    "알림 시점은 " + HealthCertDto.MAX_ALERTS + "개까지 고를 수 있어요");
+        }
+        return days;
+    }
+
+    /**
+     * 커밋되면 예전 사진을 지우고 변경 신호를 보낸다. 롤백되면 방금 저장한 파일을 지운다.
+     * 예전 사진은 그 사용자 폴더 안의 것만 지운다.
+     */
+    private void afterCertSaved(String saved, String replaced, String ownFolder, List<Integer> storeIds) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    fileStorage.delete(saved);
+                    return;
+                }
+                if (replaced != null && !replaced.equals(saved) && replaced.startsWith(ownFolder)) {
+                    fileStorage.delete(replaced);
+                }
+                changeHub.bumpAll(storeIds);
+            }
+        });
     }
 
     /** POST /me/signatures — 서명 PNG 저장. 돌려주는 id 만 계약 서명 API 가 받는다. */
@@ -99,11 +145,16 @@ public class DocumentService {
                 .orElseThrow(() -> ApiException.notFound("사용자를 찾을 수 없어요")));
     }
 
-    /** 직원 보건증 사진 (경로). 그 매장 사장님만. */
+    /** 직원 보건증 사진 (경로). 그 매장 사장님만, 재직(ACTIVE) 직원만. */
     @Transactional(readOnly = true)
     public String staffCertPhotoPath(Integer userId, Integer storeId, Integer staffId) {
         access.requireOwner(userId, storeId);
-        return certPath(access.staff(storeId, staffId).getWorker());
+        StoreWorker sw = access.staff(storeId, staffId);
+        // 보건증은 사람 단위라 퇴사·거절·대기 중인 사람의 지금 사진이 나가지 않게 재직 직원만 허용한다.
+        if (sw.getStatus() != StoreWorker.Status.ACTIVE) {
+            throw ApiException.forbidden("재직 중인 직원의 보건증만 볼 수 있어요");
+        }
+        return certPath(sw.getWorker());
     }
 
     private static String certPath(User u) {

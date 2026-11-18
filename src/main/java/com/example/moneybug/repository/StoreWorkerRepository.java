@@ -25,5 +25,13 @@ public interface StoreWorkerRepository extends JpaRepository<StoreWorker, Intege
 
     List<StoreWorker> findByWorkerIdAndStatusIn(Integer workerId, Collection<StoreWorker.Status> statuses);
 
+    /** 보건증 만료 알림 대상: 상태가 status 이고 만료일이 [from, to] 인 직원 행. */
+    @org.springframework.data.jpa.repository.Query("select sw from StoreWorker sw join fetch sw.worker w join fetch sw.store"
+            + " where sw.status = :status and w.certExpiry between :from and :to")
+    List<StoreWorker> findByStatusWithCertExpiryBetween(
+            @org.springframework.data.repository.query.Param("status") StoreWorker.Status status,
+            @org.springframework.data.repository.query.Param("from") java.time.LocalDate from,
+            @org.springframework.data.repository.query.Param("to") java.time.LocalDate to);
+
     long countByStoreIdAndStatus(Integer storeId, StoreWorker.Status status);
 }
