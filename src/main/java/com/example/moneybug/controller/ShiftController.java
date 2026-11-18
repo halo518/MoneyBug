@@ -106,7 +106,7 @@ public class ShiftController {
         return shiftService.applyTemplate(userId.intValue(), storeId, request);
     }
 
-    @Operation(summary = "근무표 확정", description = "그 달 시간 미정 근무가 남아 있으면 409. 재직 직원 전원에게 알림. 권한: 사장님")
+    @Operation(summary = "근무표 확정", description = "그 달 월 근무표를 확정해요(/schedules/{month}/confirm 과 같음). 이미 확정이면 아무것도 안 해요. 시간 미정 근무가 남아 있으면 409. 재직 직원 전원에게 알림. 권한: 사장님")
     @PostMapping("/schedule/confirm")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void confirm(@AuthenticationPrincipal Long userId, @PathVariable Integer storeId,

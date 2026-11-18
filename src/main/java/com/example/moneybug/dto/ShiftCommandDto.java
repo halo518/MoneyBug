@@ -50,8 +50,8 @@ public class ShiftCommandDto {
     /** auto-fill, plan apply 결과 { "added": n } */
     public record AddedResponse(int added) {}
 
-    /** POST /schedule/template */
-    public record TemplateRequest(@NotNull List<Integer> needs, boolean copyLastWeek) {}
+    /** POST /schedule/template. copyLastWeek 생략하면 false */
+    public record TemplateRequest(@NotNull List<Integer> needs, Boolean copyLastWeek) {}
 
     public record CopiedResponse(int copied) {}
 
