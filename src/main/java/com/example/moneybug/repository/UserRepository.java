@@ -18,4 +18,9 @@ public interface UserRepository extends JpaRepository<User, Integer> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select u from User u where u.id = :id")
     Optional<User> findByIdForUpdate(@Param("id") Integer id);
+
+    /** 보건증 등록·만료 알림 직렬화용 행 잠금 (서로의 변경을 덮어쓰지 않게). */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from User u where u.id = :id")
+    Optional<User> lockForCert(@Param("id") Integer id);
 }
