@@ -334,6 +334,10 @@ public class MonthScheduleService {
                 .map(s -> new ScheduleTemplateDto.Shift(TemplatePattern.dayIndex(s.getWorkDate()),
                         s.getStoreWorker().getId(), s.getStartMin(), s.getEndMin(), s.getPart(), s.getBreakMin(),
                         s.getKind(), s.isTimeTbd())).toList();
+        if (pattern.isEmpty()) {
+            // 빈 템플릿은 적용하면 그 달 근무를 비우기만 한다
+            throw ApiException.badRequest("EMPTY_TEMPLATE", "그 달 첫 월~일 주에 근무가 없어 템플릿으로 저장할 수 없어요");
+        }
         ScheduleTemplate t = new ScheduleTemplate();
         t.setStore(store);
         t.setName(req.name().trim());
@@ -341,15 +345,16 @@ public class MonthScheduleService {
         return ScheduleTemplateDto.Response.from(templateRepo.save(t));
     }
 
+    /** 멱등: 없는·다른 매장 템플릿도 204(다른 탭에서 이미 지운 경우). 다른 매장 것은 지우지 않는다. */
     public void deleteTemplate(Integer userId, Integer storeId, Integer templateId) {
         access.requireOwner(userId, storeId);
         templateRepo.findByIdAndStoreId(templateId, storeId).ifPresent(templateRepo::delete);
     }
 
-    /** 요일별로 대상 날짜를 채운다. 오늘 이후·출근 기록 없는 기존 근무는 교체. */
+    /** 요일별로 대상 날짜를 채운다. 오늘 이후·출근 기록 없는 기존 근무는 종류와 상관없이 교체(FE _clearFuture). */
     public void applyTemplate(Integer userId, Integer storeId, Integer templateId, String month) {
+        monthRepo.lockStore(storeId); // 첫 읽기보다 먼저: 겹친 적용이 지운 근무를 다시 지우지 않게
         Store store = access.requireOwner(userId, storeId);
-        monthRepo.lockStore(storeId);
         YearMonth ym = writableMonth(month);
         ScheduleTemplate t = templateRepo.findByIdAndStoreId(templateId, storeId)
                 .orElseThrow(() -> ApiException.notFound("템플릿을 찾을 수 없어요"));
@@ -358,26 +363,26 @@ public class MonthScheduleService {
             throw ApiException.conflict("ALREADY_CONFIRMED", "이미 확정된 근무표예요");
         }
         List<LocalDate> dates = targetDates(ym);
-        if (!dates.isEmpty()) {
-            // WORK 만 교체한다. 연차·휴무는 두고, 그 날의 템플릿 행은 건너뛴다.
-            List<Schedule> inRange = scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth());
-            removeShifts(inRange.stream().filter(s -> s.getKind() == Schedule.Kind.WORK).toList());
-            Set<String> off = inRange.stream().filter(s -> s.getKind() != Schedule.Kind.WORK)
-                    .map(s -> s.getStoreWorker().getId() + "|" + s.getWorkDate()).collect(Collectors.toSet());
-            Map<Integer, StoreWorker> workers = activeWorkers(storeId);
-            List<Schedule> rows = new ArrayList<>();
-            for (ScheduleTemplateDto.Shift p : ScheduleTemplateDto.parse(t.getPatternJson())) {
-                StoreWorker sw = workers.get(p.staffId());
-                if (sw == null) continue;
-                boolean once = p.kind() == Schedule.Kind.LEAVE;
-                for (LocalDate d : TemplatePattern.datesFor(p.dayIndex(), once, dates)) {
-                    if (off.contains(sw.getId() + "|" + d)) continue;
-                    rows.add(row(sw, d, p.startMin(), p.endMin(), p.part(), p.breakMin(),
-                            p.kind() == null ? Schedule.Kind.WORK : p.kind(), p.timeTbd()));
-                }
-            }
-            saveRows(rows);
+        if (dates.isEmpty()) {
+            throw ApiException.badRequest("PAST_MONTH", "지난 달에는 템플릿을 적용할 수 없어요");
         }
+        Map<Integer, StoreWorker> workers = activeWorkers(storeId);
+        List<Schedule> rows = new ArrayList<>();
+        for (ScheduleTemplateDto.Shift p : ScheduleTemplateDto.parse(t.getPatternJson())) {
+            StoreWorker sw = workers.get(p.staffId());
+            if (sw == null) continue;
+            boolean once = p.kind() == Schedule.Kind.LEAVE;
+            for (LocalDate d : TemplatePattern.datesFor(p.dayIndex(), once, dates)) {
+                rows.add(row(sw, d, p.startMin(), p.endMin(), p.part(), p.breakMin(),
+                        p.kind() == null ? Schedule.Kind.WORK : p.kind(), p.timeTbd()));
+            }
+        }
+        if (rows.isEmpty()) {
+            // 빈 템플릿·퇴사자만 든 템플릿으로 그 달 근무를 비우지 않는다
+            throw ApiException.badRequest("EMPTY_TEMPLATE", "이 달에 넣을 템플릿 근무가 없어요");
+        }
+        removeShifts(scheduleRepo.findByStoreBetween(storeId, dates.get(0), ym.atEndOfMonth()));
+        saveRows(rows);
         if (ms == null) ms = newMeta(store, month);
         ms.setSource(MonthSchedule.Source.TEMPLATE);
         ms.setStatus(MonthSchedule.Status.DRAFT);
