@@ -157,6 +157,32 @@ class StateServiceTest {
     }
 
     @Test
+    void contactOnlyForSelfAndOwnerPhotoForAll() {
+        for (User u : List.of(owner, alba)) {
+            u.setContact("010-0000-000" + u.getId());
+            u.setPhotoUrl("profile-photo/" + u.getId() + "/v" + u.getId() + ".png");
+        }
+        StoreWorker peer = row(103, user(5), StoreWorker.Status.ACTIVE);
+        peer.getWorker().setContact("010-5555-5555");
+        storeRows.add(peer);
+
+        when(storeRepo.findByEmployerId(1)).thenReturn(List.of(store));
+        AppStateDto.Response asOwner = svc.getState(1, null);
+        assertEquals("010-0000-0001", person(asOwner, 1).contact());
+        assertEquals("010-0000-0002", person(asOwner, 2).contact());
+
+        when(workers.findByWorkerIdAndStatusIn(eq(2), any())).thenReturn(List.of(swAlba));
+        AppStateDto.Response asAlba = svc.getState(2, null);
+        assertEquals("010-0000-0002", person(asAlba, 2).contact()); // 본인
+        assertNull(person(asAlba, 5).contact());                    // 동료
+        assertNull(person(asAlba, 1).contact());                    // 사장님 연락처도 직원에게는 안 감
+        assertTrue(person(asAlba, 1).hasPhoto());
+        assertEquals("v1.png", person(asAlba, 1).photoVer());
+        assertFalse(person(asAlba, 5).hasPhoto());
+        assertNull(person(asAlba, 5).photoVer());
+    }
+
+    @Test
     void rejectedStoreGivesOwnRowWithoutSwitchingSession() {
         StoreWorker rej = row(104, alba, StoreWorker.Status.REJECTED);
         Store other = new Store();

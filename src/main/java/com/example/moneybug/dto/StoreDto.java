@@ -43,6 +43,7 @@ public class StoreDto {
     public static class SettingsRequest {
         @JsonProperty("name")
         private String storeName; // 길이는 trim 뒤 StoreService 가 검사(한국어 문구)
+        private String address; // 위와 같음 (checkAddress)
         private Integer openMin;
         private Integer closeMin;
         private Integer weekendOpenMin;

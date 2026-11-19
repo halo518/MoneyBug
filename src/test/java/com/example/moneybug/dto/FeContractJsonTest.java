@@ -28,6 +28,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -40,7 +42,8 @@ class FeContractJsonTest {
 
     // models.dart toJson() 키
     private static final Map<String, Set<String>> FE_KEYS = Map.of(
-            "persons", Set.of("id", "name", "fullName", "certExpiry", "certAlertDays", "certHasPhoto"),
+            "persons", Set.of("id", "name", "fullName", "certExpiry", "certAlertDays", "certHasPhoto",
+                    "contact", "hasPhoto", "photoVer"),
             "stores", Set.of("id", "name", "address", "code", "ownerPersonId", "isSmall", "noticeRequiredDefault",
                     "substitutePush", "defaultDeduction", "parts", "monthlyTotals", "scheduleConfirmedAt",
                     "openMin", "closeMin", "weekendOpenMin", "weekendCloseMin", "sizeMode"),
@@ -81,6 +84,12 @@ class FeContractJsonTest {
                 }
             });
         }
+        JsonNode person = json.get("persons").get(1);
+        assertTrue(person.get("hasPhoto").isBoolean());
+        assertTrue(person.get("hasPhoto").asBoolean());
+        assertEquals("abc.jpg", person.get("photoVer").asString());
+        assertEquals("010-1234-5678", person.get("contact").asString());
+        assertTrue(json.get("persons").get(0).get("photoVer").isNull());
         assertTrue(json.get("staff").get(0).get("contract").has("start"));
         assertTrue(json.get("subs").get(0).get("applicantIds").get(0).isString());
         assertTrue(json.get("session").get("ownerStoreId").isString());
@@ -93,6 +102,9 @@ class FeContractJsonTest {
         assertTrue(part.get("id").isString());
         assertEquals("open", part.get("tone").asString());
         assertEquals(30, part.get("breakMin").asInt());
+        assertTrue(part.get("flex").isBoolean());
+        assertFalse(part.get("flex").asBoolean()); // 기존 행(null) = 알바 파트
+        assertEquals("all", part.get("days").asString());
         JsonNode staff = json.get("staff").get(0);
         assertEquals(7, staff.get("fixedParts").size());
         assertEquals("오픈", staff.get("fixedParts").get(0).get(0).asString());
@@ -139,6 +151,34 @@ class FeContractJsonTest {
     }
 
     @Test
+    void partSaveItemAcceptsFlexAndDays() throws Exception {
+        StorePartDto.SaveRequest req = mapper.readValue("{\"parts\":[{\"id\":\"3\",\"name\":\"오픈\",\"startMin\":420,"
+                + "\"endMin\":960,\"flex\":true,\"days\":\"weekday\"},{\"name\":\"마감\",\"startMin\":1020,"
+                + "\"endMin\":1320}]}", StorePartDto.SaveRequest.class);
+        assertEquals(Boolean.TRUE, req.parts().get(0).flex());
+        assertEquals(StorePart.Days.WEEKDAY, req.parts().get(0).days());
+        assertNull(req.parts().get(1).flex()); // 예전 앱: 안 보냄
+        assertNull(req.parts().get(1).days());
+        JsonNode res = mapper.readTree(mapper.writeValueAsString(StorePartDto.Response.from(partOf(true))));
+        assertTrue(res.get("flex").asBoolean());
+        assertEquals("weekend", res.get("days").asString());
+    }
+
+    private static StorePart partOf(boolean flex) {
+        Store store = new Store();
+        store.setId(1);
+        StorePart p = new StorePart();
+        p.setId(2);
+        p.setStore(store);
+        p.setName("주말오픈");
+        p.setStartMin(420);
+        p.setEndMin(960);
+        p.setFlex(flex);
+        p.setDays(StorePart.Days.WEEKEND);
+        return p;
+    }
+
+    @Test
     void requestsAcceptFeNamesAndStringIds() throws Exception {
         ShiftCommandDto.CreateRequest create = mapper.readValue(
                 "{\"date\":\"2026-05-14\",\"startMin\":600,\"endMin\":960,\"part\":\"오픈\",\"staffIds\":[\"3\",\"4\"],"
@@ -164,6 +204,8 @@ class FeContractJsonTest {
     private AppStateDto.Response sampleState() {
         User owner = user(1, "사장님");
         User taewoo = user(2, "태우");
+        taewoo.setPhotoUrl("profile-photo/2/abc.jpg");
+        taewoo.setContact("010-1234-5678");
         Store store = new Store();
         store.setId(10);
         store.setEmployer(owner);
@@ -179,6 +221,8 @@ class FeContractJsonTest {
         part.setNeed(1);
         part.setTone(StorePart.Tone.OPEN);
         part.setBreakMin(30);
+        part.setFlex(null); // 컬럼 추가 전 행
+        part.setDays(null);
 
         StoreWorker sw = new StoreWorker();
         sw.setId(20);

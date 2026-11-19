@@ -693,6 +693,7 @@ public class ShiftService {
         for (LocalDate d : dates) {
             for (int pi = 0; pi < parts.size(); pi++) {
                 StorePart part = parts.get(pi);
+                if (part.isFlex() || !part.appliesOn(d)) continue; // 직원 파트·그날 안 쓰는 파트는 안 채움
                 int need = pi < needs.size() ? needs.get(pi) : part.getNeed();
                 long have = all.stream().filter(s -> s.isWork() && s.getWorkDate().equals(d)
                         && part.getName().equals(s.getPart())).count();
