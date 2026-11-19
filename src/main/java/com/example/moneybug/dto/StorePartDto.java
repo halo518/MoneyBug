@@ -58,7 +58,13 @@ public class StorePartDto {
     public record SaveRequest(@NotNull List<@NotNull(message = "비어 있는 파트가 있어요") Item> parts) {}
 
     public record Item(String id, String name, StorePart.Tone tone, Integer startMin, Integer endMin,
-                       Integer breakMin, Integer need) {}
+                       Integer breakMin, Integer need, Boolean flex, StorePart.Days days) {
+        /** flex·days 를 안 보내는 예전 앱과 같은 모양. */
+        public Item(String id, String name, StorePart.Tone tone, Integer startMin, Integer endMin,
+                    Integer breakMin, Integer need) {
+            this(id, name, tone, startMin, endMin, breakMin, need, null, null);
+        }
+    }
 
     @Getter
     @Builder
@@ -73,6 +79,8 @@ public class StorePartDto {
         private Integer need;
         private StorePart.Tone tone;
         private Integer breakMin;
+        private Boolean flex;
+        private StorePart.Days days;
 
         public static Response from(StorePart part) {
             return Response.builder()
@@ -84,6 +92,8 @@ public class StorePartDto {
                     .need(part.getNeed())
                     .tone(part.getTone())
                     .breakMin(part.getBreakMin())
+                    .flex(part.isFlex())
+                    .days(part.getDays())
                     .build();
         }
     }

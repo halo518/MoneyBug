@@ -9,7 +9,8 @@ import java.util.List;
 
 /**
  * 고정 근무 계산(DB 없는 순수 로직). 레퍼런스 rules.ts fixedShifts + autofill.ts.
- * 알바생은 그 요일에 고른 파트마다 파트 시간·휴게로, 직원은 요일별 workHours 로 근무를 만든다.
+ * 알바생은 그 요일에 고른 알바 파트마다 파트 시간·휴게로, 직원은 그 요일 고정 직원 파트(파트 시간 그대로)나
+ * workHours 로 근무를 만든다.
  */
 public final class FixedShiftPlanner {
 
@@ -24,7 +25,12 @@ public final class FixedShiftPlanner {
         public int close(LocalDate d) { return Holidays.isWeekendOrHoliday(d) ? weekendCloseMin : closeMin; }
     }
 
-    public record PartDef(String name, int startMin, int endMin, int breakMin) {}
+    /** flex = 직원 파트(직원 고정 파트로만 쓰고 알바생에게는 안 줌). */
+    public record PartDef(String name, int startMin, int endMin, int breakMin, boolean flex) {
+        public PartDef(String name, int startMin, int endMin, int breakMin) {
+            this(name, startMin, endMin, breakMin, false);
+        }
+    }
 
     public record WorkHours(int startMin, int endMin) {}
 
@@ -44,9 +50,10 @@ public final class FixedShiftPlanner {
             this(id, partTimer, fixedParts, workHours, availHours, false);
         }
 
-        /** 고정 시간 없는 직원: 하루 종일 빈칸 후보. */
+        /** 고정 파트·고정 시간이 하루도 없는 직원: 하루 종일 빈칸 후보(직원 파트 순환 대상). */
         public boolean flex() {
-            return !partTimer && (workHours == null || workHours.stream().allMatch(w -> w == null));
+            return !partTimer && (workHours == null || workHours.stream().allMatch(w -> w == null))
+                    && (fixedParts == null || fixedParts.stream().allMatch(d -> d == null || d.isEmpty()));
         }
 
         /** 그 날 [s,e] 근무를 맡을 수 있는 시간인지(flex 직원은 항상, 알바생은 availHours 안일 때). */
@@ -89,7 +96,7 @@ public final class FixedShiftPlanner {
                     if (names == null) continue;
                     int dayWork = 0; // 연소자 하루 7시간 판단용
                     for (PartDef part : sorted) {
-                        if (!names.contains(part.name())) continue;
+                        if (part.flex() || !names.contains(part.name())) continue;
                         // 그날 영업시간으로 자른다. 잘렸으면 휴게도 잘린 길이로 다시 정한다.
                         int s = Math.max(part.startMin(), hours.open(date)), e = Math.min(part.endMin(), hours.close(date));
                         if (e <= s) {
@@ -117,9 +124,18 @@ public final class FixedShiftPlanner {
                         out.add(new Planned(p.id(), date, s, e, part.name(), brk));
                     }
                 } else {
+                    // 직원 고정 파트: 파트 시간·휴게 그대로(영업시간으로 안 자름), 파트 이름으로. days 는 안 본다.
+                    List<String> names = at(p.fixedParts(), dow);
+                    PartDef fixed = names == null ? null : sorted.stream()
+                            .filter(x -> x.flex() && names.contains(x.name()) && x.endMin() > x.startMin())
+                            .findFirst().orElse(null);
+                    if (fixed != null) {
+                        out.add(new Planned(p.id(), date, fixed.startMin(), fixed.endMin(), fixed.name(), fixed.breakMin()));
+                        continue;
+                    }
+                    // 고정 시간은 영업시간 밖이어도 그대로 둔다.
                     WorkHours w = at(p.workHours(), dow);
-                    if (w == null || w.startMin() < hours.open(date) || w.endMin() > hours.close(date)
-                            || w.endMin() <= w.startMin()) continue;
+                    if (w == null || w.endMin() <= w.startMin()) continue;
                     out.add(new Planned(p.id(), date, w.startMin(), w.endMin(), null,
                             minBreakFor(w.endMin() - w.startMin())));
                 }
@@ -133,9 +149,11 @@ public final class FixedShiftPlanner {
     /** 이미 있는 근무는 두고 빠진 고정 근무만 돌려준다. 연차·휴무인 날, 같은 파트(알바)·아무 근무(직원)가 있으면 건너뜀. */
     public static List<Planned> autofill(StoreHours hours, List<PartDef> parts, List<Person> people,
                                          List<LocalDate> dates, List<Existing> existing) {
+        java.util.Set<Integer> employees = new java.util.HashSet<>();
+        people.stream().filter(p -> !p.partTimer()).forEach(p -> employees.add(p.id()));
         return fixedShifts(hours, parts, people, dates).stream()
                 .filter(f -> existing.stream().noneMatch(e -> e.staffId() == f.staffId() && e.date().equals(f.date())
-                        && (e.offDay() || f.part() == null || f.part().equals(e.part()))))
+                        && (e.offDay() || employees.contains(f.staffId()) || f.part().equals(e.part()))))
                 .toList();
     }
 
