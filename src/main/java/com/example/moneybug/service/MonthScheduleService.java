@@ -650,7 +650,7 @@ public class MonthScheduleService {
         Map<Integer, String> names = new HashMap<>();
         for (StoreWorker w : c.workers.values()) {
             int wage = StaffWageService.wageOn(wageService.rows(w.getId()), ym.atDay(1), w.getHourlyWage());
-            boolean partTimer = person(w).partTimer();
+            boolean partTimer = person(w, Set.of()).partTimer();
             staff.add(new ScheduleInsights.StaffInfo(w.getId(), w.getWorker().getName(), partTimer, wage,
                     w.getKind() == StoreWorker.Kind.MINOR));
             names.put(w.getId(), w.getWorker().getName());
@@ -661,7 +661,7 @@ public class MonthScheduleService {
                 .map(s -> s.getStoreWorker().getId() + "|" + s.getWorkDate()).collect(Collectors.toSet());
         List<GapFiller.PartNeed> needs = partRepo.findByStoreIdOrderByStartMinAsc(storeId).stream()
                 .map(x -> new GapFiller.PartNeed(x.getName(), x.getStartMin(), x.getEndMin(),
-                        x.getNeed() == null ? 1 : x.getNeed())).toList();
+                        x.getNeed() == null ? 1 : x.getNeed(), x.getBreakMin(), x.isFlex(), x.getDays())).toList();
         // 맥락 근무(결과에는 안 들어감): 첫 대상일이 주 중간이면 그 주 월요일~전날의 기존 근무(지난달 말 포함),
         // 그리고 대상일의 출근 기록 있는 근무(적용해도 안 지워짐). 연차·휴무 제외.
         LocalDate monday = dates.get(0).with(java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
@@ -734,10 +734,12 @@ public class MonthScheduleService {
     private Ctx ctx(Store store) {
         StoreHours hours = new StoreHours(store.getOpenMin(), store.getCloseMin(),
                 store.getWeekendOpenMin(), store.getWeekendCloseMin());
+        // 알바 고정 근무는 알바 파트만, 직원 고정 근무는 직원 파트만 쓴다(FixedShiftPlanner 가 flex 로 가른다).
         List<PartDef> parts = partRepo.findByStoreIdOrderByStartMinAsc(store.getId()).stream()
-                .map(p -> new PartDef(p.getName(), p.getStartMin(), p.getEndMin(), p.getBreakMin())).toList();
+                .map(p -> new PartDef(p.getName(), p.getStartMin(), p.getEndMin(), p.getBreakMin(), p.isFlex())).toList();
+        Set<String> employeeParts = parts.stream().filter(PartDef::flex).map(PartDef::name).collect(Collectors.toSet());
         Map<Integer, StoreWorker> workers = activeWorkers(store.getId());
-        List<Person> people = workers.values().stream().map(MonthScheduleService::person).toList();
+        List<Person> people = workers.values().stream().map(w -> person(w, employeeParts)).toList();
         return new Ctx(hours, parts, workers, people);
     }
 
@@ -747,15 +749,18 @@ public class MonthScheduleService {
                 .collect(Collectors.toMap(StoreWorker::getId, w -> w, (a, b) -> a, LinkedHashMap::new));
     }
 
-    private static Person person(StoreWorker w) {
+    /** employeeParts: 직원 파트 이름. 직원의 고정 파트 중 이 이름이 아닌 것(알바 파트·지운 파트)은 무시한다. */
+    private static Person person(StoreWorker w, Set<String> employeeParts) {
         boolean partTimer = w.getKind() == null || w.getKind() == StoreWorker.Kind.PART_TIMER
                 || w.getKind() == StoreWorker.Kind.MINOR;
+        List<List<String>> fixed = StaffPrefs.fixedParts(w);
+        if (!partTimer) fixed = fixed.stream().map(d -> d.stream().filter(employeeParts::contains).toList()).toList();
         List<FixedShiftPlanner.WorkHours> wh = StaffPrefs.workHours(w) == null ? null
                 : StaffPrefs.workHours(w).stream()
                 .map(h -> h == null ? null : new FixedShiftPlanner.WorkHours(h.startMin(), h.endMin())).toList();
         List<FixedShiftPlanner.WorkHours> avail = StaffPrefs.availHours(w).stream()
                 .map(h -> h == null ? null : new FixedShiftPlanner.WorkHours(h.startMin(), h.endMin())).toList();
-        return new Person(w.getId(), partTimer, StaffPrefs.fixedParts(w), wh, avail,
+        return new Person(w.getId(), partTimer, fixed, wh, avail,
                 w.getKind() == StoreWorker.Kind.MINOR);
     }
 

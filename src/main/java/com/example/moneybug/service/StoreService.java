@@ -79,6 +79,8 @@ public class StoreService {
             part.setNeed(1);
             part.setTone(DEFAULT_PART_TONES[i]);
             part.setBreakMin(30);
+            part.setFlex(false);
+            part.setDays(StorePart.Days.ALL);
             storePartRepository.save(part);
         }
         return detail(store);
@@ -258,6 +260,10 @@ public class StoreService {
                 added.add(it);
             } else {
                 if (!byId.containsKey(id)) throw ApiException.notFound("파트를 찾을 수 없어요");
+                if (it.flex() != null && it.flex() != byId.get(id).isFlex()) {
+                    throw ApiException.badRequest("INVALID_PART",
+                            name + " 파트는 직원 파트·알바 파트를 바꿀 수 없어요. 지우고 새로 만들어 주세요.");
+                }
                 if (keep.put(id, it) != null) {
                     throw ApiException.badRequest("DUPLICATE_PART", "같은 파트가 두 번 들어 있어요");
                 }
@@ -266,9 +272,11 @@ public class StoreService {
 
         // unique(store, name) 때문에 순서가 중요: 삭제 → 임시 이름 → 최종 이름/추가
         java.util.Set<String> deleted = new java.util.HashSet<>();
+        Map<String, Boolean> deletedFlex = new java.util.HashMap<>();
         for (StorePart p : existing) {
             if (!keep.containsKey(p.getId())) {
                 deleted.add(p.getName());
+                deletedFlex.put(partKey(p.getName()), p.isFlex());
                 storePartRepository.delete(p);
             }
         }
@@ -295,13 +303,18 @@ public class StoreService {
             StorePart p = new StorePart();
             p.setStore(store);
             p.setName(it.name().trim());
+            p.setFlex(Boolean.TRUE.equals(it.flex()));
             fill(p, it);
             storePartRepository.save(p);
         }
         storePartRepository.flush();
 
-        // 같은 저장에서 같은 이름(대소문자·전각 무시)을 다시 쓰는 경우는 지우지 않는다.
-        deleted.removeIf(n -> names.contains(partKey(n)));
+        // 같은 저장에서 같은 이름(대소문자·전각 무시)을 같은 목록(직원·알바)에 다시 쓰는 경우는 지우지 않는다.
+        // 다른 목록으로 다시 쓰면 지운 것으로 본다(알바 고정 근무에 직원 파트 이름이 남지 않게).
+        Map<String, Boolean> finalFlex = new java.util.HashMap<>();
+        keep.forEach((id, it) -> finalFlex.put(partKey(it.name()), byId.get(id).isFlex()));
+        added.forEach(it -> finalFlex.put(partKey(it.name()), Boolean.TRUE.equals(it.flex())));
+        deleted.removeIf(n -> deletedFlex.get(partKey(n)).equals(finalFlex.get(partKey(n))));
         if (!deleted.isEmpty()) dropDeletedParts(storeId, deleted);
         if (!renames.isEmpty()) propagateRenames(storeId, renames);
         return storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
@@ -323,6 +336,7 @@ public class StoreService {
         if (it.tone() != null) p.setTone(it.tone());
         p.setBreakMin(it.breakMin() == null ? 0 : it.breakMin());
         p.setNeed(it.need() == null ? 1 : it.need());
+        if (it.days() != null) p.setDays(it.days()); // 예전 앱은 안 보낸다: 기존 값 유지, 새 파트는 ALL
     }
 
     /**
@@ -346,7 +360,7 @@ public class StoreService {
                     .toList()));
         }
         String fallback = storePartRepository.findByStoreIdOrderByStartMinAsc(storeId).stream()
-                .map(StorePart::getName).findFirst().orElse(null);
+                .filter(p -> !p.isFlex()).map(StorePart::getName).findFirst().orElse(null);
         for (StoreWorker sw : storeWorkerRepository.findByStoreId(storeId)) {
             if (sw.getPart() != null && deleted.contains(sw.getPart())) sw.setPart(fallback);
             if (sw.getFixedParts() != null) {
@@ -446,7 +460,7 @@ public class StoreService {
         sw.setStatus(StoreWorker.Status.PENDING);
         sw.setHourlyWage(StoreWorkerDto.MIN_WAGE_2026);
         sw.setTaxType(store.getDefaultDeduction() != null ? store.getDefaultDeduction() : StoreWorker.TaxType.NONE);
-        sw.setPart(parts.isEmpty() ? null : parts.get(0).getName());
+        sw.setPart(parts.stream().filter(p -> !p.isFlex()).map(StorePart::getName).findFirst().orElse(null));
         sw.setRequestedAt(TimeUtil.now());
         storeWorkerRepository.save(sw);
 
