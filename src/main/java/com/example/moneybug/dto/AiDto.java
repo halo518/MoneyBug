@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public class AiDto {
 
@@ -25,6 +26,19 @@ public class AiDto {
     @AllArgsConstructor
     public static class Response {
         private String answer;
+        /** 근거 조항 (예: "근로기준법 제55조"). 없으면 빈 배열. */
+        private List<String> citations;
         private LocalDateTime createdAt;
+    }
+
+    /** POST /ai/labor-audit. aiUsed = summary·action 을 AI 가 다듬었는지(false 면 규칙 기본 문장). */
+    public record AuditResponse(String summary, boolean aiUsed, LocalDateTime createdAt, List<Finding> findings) {}
+
+    /** severity: high | medium | low. staffIds 는 FeIdJsonModule 이 문자열로 내보낸다. */
+    public record Finding(String code, String severity, String title, String detail, String action,
+                          List<Integer> staffIds, List<String> citations) {
+        public Finding withText(String detail, String action) {
+            return new Finding(code, severity, title, detail, action, staffIds, citations);
+        }
     }
 }
