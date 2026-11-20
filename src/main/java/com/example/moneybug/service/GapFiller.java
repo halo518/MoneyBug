@@ -26,7 +26,7 @@ import java.util.Set;
  */
 public final class GapFiller {
 
-    private static final int WEEK_CAP_MIN = 2400;
+    static final int WEEK_CAP_MIN = 2400;
     private static final int MERGE_CAP_MIN = 600;
     private static final int WEEK_DAYS_CAP = 6;
     private static final int MINOR_DAY_MIN = 420;
