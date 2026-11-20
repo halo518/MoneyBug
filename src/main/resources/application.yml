@@ -63,11 +63,8 @@ kakao:
 # 웹 카카오 로그인 후 브라우저를 돌려보낼 Flutter 웹앱 주소 (끝의 / 는 제거됨)
 app:
   frontend-url: ${FRONTEND_URL:http://localhost:3004}
-  # AI 노무 도우미 (Anthropic). 키가 비면 AI_DISABLED(503).
-  ai:
-    api-key: ${ANTHROPIC_API_KEY:}
-    model: ${AI_MODEL:claude-sonnet-5-5}
-  # 근무표 AI 생성 (Ollama 호환 서버). 키는 비워도 된다.
+  # 자체 LLM (Ollama 호환 서버): 근무표 AI 브리핑 + AI 노무 도우미. 키는 비워도 된다.
+  # base-url 이 비면 노무 도우미 질문은 AI_DISABLED(503), 노무 점검은 규칙 결과만(aiUsed=false).
   llm:
     base-url: ${LLM_BASE_URL:https://ai.ruraeru.xyz}
     model: ${LLM_MODEL:qwen3.5:9b}

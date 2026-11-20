@@ -16,9 +16,9 @@ import java.util.Set;
 
 /** 생성된 근무표의 인건비·주휴수당 요약과 사장님용 문장. */
 public final class ScheduleInsights {
-    private static final int HOLIDAY_MIN = 900;
+    static final int HOLIDAY_MIN = 900;
     private static final int HOLIDAY_CAP = 2400;
-    private static final int MINOR_WEEK_MIN = 2100;
+    static final int MINOR_WEEK_MIN = 2100;
 
     /** minor: 연소 근로자(1일 7시간·주 35시간, 22:00~06:00 금지). */
     public record StaffInfo(int id, String name, boolean partTimer, int wage, boolean minor) {

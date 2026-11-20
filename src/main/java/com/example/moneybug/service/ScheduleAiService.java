@@ -1,19 +1,10 @@
 package com.example.moneybug.service;
 
 import com.example.moneybug.entity.MonthSchedule;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.ResourceAccessException;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -25,23 +16,10 @@ public class ScheduleAiService {
     private static final Pattern STAFF_REF = Pattern.compile("#(\\d+)");
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
-    private final RestClient client;
-    private final String baseUrl;
-    private final String model;
-    private final String apiKey;
+    private final LlmClient llm;
 
-    @Autowired
-    public ScheduleAiService(@Value("${app.llm.base-url:https://ai.ruraeru.xyz}") String baseUrl,
-                             @Value("${app.llm.model:qwen3.5:9b}") String model,
-                             @Value("${app.llm.api-key:}") String apiKey) {
-        this.baseUrl = baseUrl.replaceAll("/+$", "");
-        this.model = model;
-        // 대시보드에 붙여넣을 때 섞이는 공백·따옴표·"Bearer " 제거
-        this.apiKey = apiKey.trim().replaceAll("^[\"']|[\"']$", "").replaceFirst("(?i)^Bearer\\s+", "");
-        var factory = new JdkClientHttpRequestFactory(
-                java.net.http.HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build());
-        factory.setReadTimeout(Duration.ofSeconds(60));
-        this.client = RestClient.builder().requestFactory(factory).build();
+    public ScheduleAiService(LlmClient llm) {
+        this.llm = llm;
     }
 
     // ---------------------------------------------------------------- 프롬프트
@@ -60,8 +38,13 @@ public class ScheduleAiService {
 
     /** AI 에는 번호만 보냈으니 문장의 #id 를 이름으로 되돌린다. */
     static String nameBack(String comment, Map<Integer, String> names) {
-        if (comment == null) return "";
-        return STAFF_REF.matcher(comment).replaceAll(m -> {
+        return nameBack(comment, STAFF_REF, names);
+    }
+
+    /** ref 의 첫 그룹(숫자)을 names 로 되돌린다. 숫자를 통째로 읽으므로 "직원1" 이 "직원10" 을 건드리지 않는다. */
+    static String nameBack(String text, Pattern ref, Map<Integer, String> names) {
+        if (text == null) return "";
+        return ref.matcher(text).replaceAll(m -> {
             String n = names.get(Integer.parseInt(m.group(1)));
             return java.util.regex.Matcher.quoteReplacement(n != null ? n : m.group());
         });
@@ -85,38 +68,11 @@ public class ScheduleAiService {
     }
 
     private JsonNode call(String prompt) {
-        Map<String, Object> body = Map.of(
-                "model", model,
-                "messages", List.of(Map.of("role", "user", "content", prompt)),
-                "format", responseSchema(),
-                "think", false,
-                "stream", false,
-                "options", Map.of("num_ctx", 8192),
-                "keep_alive", "30m");
-        JsonNode res;
-        try {
-            RestClient.RequestBodySpec req = client.post().uri(baseUrl + "/api/chat")
-                    .contentType(MediaType.APPLICATION_JSON);
-            if (!apiKey.isBlank()) req = req.header("Authorization", "Bearer " + apiKey);
-            res = req.body(body).retrieve().body(JsonNode.class);
-        } catch (ResourceAccessException e) {
-            throw failed("AI 서버에 연결하지 못했어요. 잠시 뒤 다시 시도해 주세요.");
-        } catch (RestClientResponseException e) {
-            int code = e.getStatusCode().value();
-            if (code == 401 || code == 403) throw failed("AI 서버가 인증을 거절했어요(" + code + "). 서버 설정을 확인해 주세요.");
-            throw failed("AI 서버 오류가 났어요(" + code + ").");
-        } catch (Exception e) {
-            throw failed("AI 호출에 실패했어요.");
-        }
-        String content = res == null ? "" : res.path("message").path("content").asString("");
+        String content = llm.chat(List.of(Map.of("role", "user", "content", prompt)), responseSchema(), 8192, false);
         try {
             return MAPPER.readTree(content);
         } catch (Exception e) {
-            throw failed("AI 응답이 잘렸거나 JSON이 아니에요. 다시 시도해 주세요.");
+            throw LlmClient.failed("AI 응답이 잘렸거나 JSON이 아니에요. 다시 시도해 주세요.");
         }
-    }
-
-    private static ApiException failed(String message) {
-        return new ApiException(HttpStatus.BAD_GATEWAY, "AI_FAILED", message);
     }
 }

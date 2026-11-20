@@ -38,7 +38,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class DashboardService {
 
-    private static final int CERT_ALERT_DAYS = 30;
+    static final int CERT_ALERT_DAYS = 30;
 
     private final ScheduleRepository scheduleRepository;
     private final AttendanceRepository attendanceRepository;
