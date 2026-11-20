@@ -29,7 +29,7 @@ class StoreChangeInterceptorTest {
     @RestController
     @RequestMapping("/api/v1/stores/{storeId}")
     static class Probe {
-        @PostMapping({"/schedules/generate/preview", "/schedule-plans", "/ai/labor-questions",
+        @PostMapping({"/schedules/generate/preview", "/schedule-plans", "/ai/labor-questions", "/ai/labor-audit",
                 "/schedule-plans/{planId}/apply", "/shifts"})
         void ok() {}
     }
@@ -39,7 +39,8 @@ class StoreChangeInterceptorTest {
 
     @Test
     void previewsDoNotBumpButWritesDo() throws Exception {
-        for (String p : new String[]{"/schedules/generate/preview", "/schedule-plans", "/ai/labor-questions"}) {
+        for (String p : new String[]{"/schedules/generate/preview", "/schedule-plans", "/ai/labor-questions",
+                "/ai/labor-audit"}) {
             mvc.perform(post("/api/v1/stores/5" + p));
         }
         verify(hub, never()).bump(any());
